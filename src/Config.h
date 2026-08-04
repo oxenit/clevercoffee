@@ -270,6 +270,11 @@ class Config {
             _configDefs.emplace("brew.pre_infusion.time", ConfigDef::forDouble(PRE_INFUSION_TIME, PRE_INFUSION_TIME_MIN, PRE_INFUSION_TIME_MAX));
             _configDefs.emplace("brew.pre_infusion.pause", ConfigDef::forDouble(PRE_INFUSION_PAUSE_TIME, PRE_INFUSION_PAUSE_MIN, PRE_INFUSION_PAUSE_MAX));
 
+            // Pressure profiling
+            _configDefs.emplace("brew.profiling.enabled", ConfigDef::forBool(false));
+            _configDefs.emplace("brew.profiling.pre_infusion_pressure", ConfigDef::forDouble(PRE_INFUSION_PRESSURE, PROFILING_PRESSURE_MIN, PROFILING_PRESSURE_MAX));
+            _configDefs.emplace("brew.profiling.pressure", ConfigDef::forDouble(BREW_PRESSURE, PROFILING_PRESSURE_MIN, PROFILING_PRESSURE_MAX));
+
             // Steam
             _configDefs.emplace("steam.setpoint", ConfigDef::forDouble(STEAMSETPOINT, STEAM_SETPOINT_MIN, STEAM_SETPOINT_MAX));
 
@@ -327,6 +332,9 @@ class Config {
             _configDefs.emplace("hardware.relays.heater.trigger_type", ConfigDef::forInt(Relay::HIGH_TRIGGER, 0, 1));
             _configDefs.emplace("hardware.relays.valve.trigger_type", ConfigDef::forInt(Relay::HIGH_TRIGGER, 0, 1));
             _configDefs.emplace("hardware.relays.pump.trigger_type", ConfigDef::forInt(Relay::HIGH_TRIGGER, 0, 1));
+
+            // Hardware - Pump dimmer
+            _configDefs.emplace("hardware.pump.dimmer.enabled", ConfigDef::forBool(false));
 
             // Hardware - Switches
             _configDefs.emplace("hardware.switches.brew.enabled", ConfigDef::forBool(false));

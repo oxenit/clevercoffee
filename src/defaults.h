@@ -34,6 +34,8 @@
 #define BREW_PID_DELAY           10.0              // delay until enabling PID controller during brew (no heating during this time)
 #define PRE_INFUSION_TIME        2.0               // pre-infusion time in seconds
 #define PRE_INFUSION_PAUSE_TIME  5.0               // pre-infusion pause time in seconds
+#define PRE_INFUSION_PRESSURE    3.0               // pre-infusion pressure target in bar (pressure profiling)
+#define BREW_PRESSURE            9.0               // main extraction pressure target in bar (pressure profiling)
 #define TARGET_BREW_WEIGHT       36.0              // Target weight in grams
 #define STANDBY_MODE_TIME        35.0              // Time in minutes until the heater is turned off
 #define BACKFLUSH_CYCLES         5                 // number of cycles the backflush should run
@@ -82,6 +84,8 @@
 #define PRE_INFUSION_TIME_MAX         60.0
 #define PRE_INFUSION_PAUSE_MIN        0.0
 #define PRE_INFUSION_PAUSE_MAX        60.0
+#define PROFILING_PRESSURE_MIN        0.0
+#define PROFILING_PRESSURE_MAX        12.0
 #define TARGET_BREW_WEIGHT_MIN        0.0
 #define TARGET_BREW_WEIGHT_MAX        500.0
 #define PID_KP_STEAM_MIN              0.0

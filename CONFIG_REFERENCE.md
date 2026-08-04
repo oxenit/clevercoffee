@@ -100,6 +100,25 @@ This document describes all configuration parameters available in the `config.js
 - **Range**: 0.0-60.0
 - **Description**: Pause duration after pre-infusion
 
+## Pressure Profiling
+
+### `brew.profiling.enabled`
+- **Type**: Boolean
+- **Default**: `false`
+- **Description**: Modulates the pump power during the brew to follow the configured pressure targets. Requires the pressure sensor (`hardware.sensors.pressure.enabled`) and the pump dimmer (`hardware.pump.dimmer.enabled`)
+
+### `brew.profiling.pre_infusion_pressure`
+- **Type**: Double (bar)
+- **Default**: `3.0`
+- **Range**: 0.0-12.0
+- **Description**: Pressure target during the pre-infusion phase
+
+### `brew.profiling.pressure`
+- **Type**: Double (bar)
+- **Default**: `9.0`
+- **Range**: 0.0-12.0
+- **Description**: Pressure target during the main extraction phase
+
 ---
 
 ## Display Settings
@@ -239,6 +258,13 @@ For each LED type (status, brew, steam):
     - `0`: Low trigger (active low)
     - `1`: High trigger (active high)
 - **Description**: Pump relay trigger type
+
+## Pump Dimmer
+
+### `hardware.pump.dimmer.enabled`
+- **Type**: Boolean
+- **Default**: `false`
+- **Description**: The pump is driven by an AC dimmer module (e.g. RobotDyn type) instead of a relay: dimmer gate/PWM input on the pump pin (GPIO 27), dimmer zero crossing output on the ZC pin (GPIO 18). The pump power is then modulated by pulse skip modulation, enabling pressure profiling. Regular on/off operation (backflush, manual flush, hot water) keeps working at full power
 
 ## Sensors
 

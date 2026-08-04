@@ -997,6 +997,10 @@ void setup() {
     pumpRelay = new Relay(*pumpRelayPin, pumpTriggerType);
     pumpRelay->off();
 
+    if (config.get<bool>("hardware.pump.dimmer.enabled")) {
+        pumpControlInit(pumpTriggerType == Relay::HIGH_TRIGGER);
+    }
+
     if (config.get<bool>("hardware.switches.power.enabled")) {
         const auto type = static_cast<Switch::Type>(config.get<int>("hardware.switches.power.type"));
         const auto mode = static_cast<Switch::Mode>(config.get<int>("hardware.switches.power.mode"));
@@ -1121,6 +1125,10 @@ void setup() {
 
             if (config.get<bool>("hardware.sensors.pressure.enabled")) {
                 mqttSensors["pressure"] = [] { return inputPressureFilter; };
+            }
+
+            if (config.get<bool>("hardware.pump.dimmer.enabled")) {
+                mqttSensors["pumpPower"] = [] { return static_cast<float>(pumpPsmDuty); };
             }
 
             snprintf(topic_will, sizeof(topic_will), "%s%s/%s", mqtt_topic_prefix.c_str(), hostname.c_str(), "status");
@@ -1366,7 +1374,14 @@ void loopPid() {
             previousMillisPressure = currentMillisPressure;
             inputPressure = measurePressure();
             inputPressureFilter = filterPressureValue(inputPressure);
+            updatePumpPressureControl(inputPressureFilter);
         }
+    }
+
+    // failsafe: pressure profiling must never outlive the brew (e.g. abort through empty water tank or emergency stop)
+    if (pumpPsmActive && !checkBrewActive()) {
+        stopPumpProfiling();
+        pumpRelay->off();
     }
 
     checkSteamSwitch();

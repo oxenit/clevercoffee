@@ -26,6 +26,8 @@ extern double steamSetpoint;
 extern double targetBrewTime;
 extern double preinfusion;
 extern double preinfusionPause;
+extern double preinfusionPressure;
+extern double brewPressure;
 extern int backflushCycles;
 extern double backflushFillTime;
 extern double backflushFlushTime;
@@ -322,6 +324,43 @@ void ParameterRegistry::initialize(Config& config) {
             PRE_INFUSION_PAUSE_MAX,
             "Pause to let the puck bloom after the initial pre-infusion while turning off the pump and leaving the 3-way valve open"
         );
+
+        if (config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled")) {
+            addBoolConfigParam(
+                "brew.profiling.enabled",
+                "Pressure Profiling",
+                sBrewSection,
+                341,
+                nullptr,
+                "Modulates the pump power during the brew to follow the configured pressure targets instead of running the pump at full power"
+            );
+
+            addNumericConfigParam<double>(
+                "brew.profiling.pre_infusion_pressure",
+                "Pre-infusion Pressure (bar)",
+                kDouble,
+                sBrewSection,
+                342,
+                &preinfusionPressure,
+                PROFILING_PRESSURE_MIN,
+                PROFILING_PRESSURE_MAX,
+                "Pressure target during the pre-infusion phase",
+                [&config] { return config.get<bool>("brew.profiling.enabled"); }
+            );
+
+            addNumericConfigParam<double>(
+                "brew.profiling.pressure",
+                "Brew Pressure (bar)",
+                kDouble,
+                sBrewSection,
+                343,
+                &brewPressure,
+                PROFILING_PRESSURE_MIN,
+                PROFILING_PRESSURE_MAX,
+                "Pressure target during the main extraction phase",
+                [&config] { return config.get<bool>("brew.profiling.enabled"); }
+            );
+        }
 
         // Maintenance Section
         addNumericConfigParam<int>(
@@ -914,6 +953,17 @@ void ParameterRegistry::initialize(Config& config) {
         (const char* const[]){"Low Trigger", "High Trigger"},
         2,
         "Relay trigger type for pump control",
+        [] { return true; },
+        true
+    );
+
+    addBoolConfigParam(
+        "hardware.pump.dimmer.enabled",
+        "Pump Dimmer",
+        sHardwareRelaySection,
+        2104,
+        nullptr,
+        "The pump is driven by an AC dimmer module instead of a relay: dimmer gate input on the pump pin, zero crossing output on the ZC pin. Enables variable pump power for pressure profiling",
         [] { return true; },
         true
     );

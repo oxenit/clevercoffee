@@ -927,6 +927,10 @@ void setup() {
 
     Wire.begin();
 
+    if (config.get<bool>("hardware.sensors.pressure.enabled")) {
+        initPressureSensor(config.get<int>("hardware.sensors.pressure.type"));
+    }
+
     if (config.get<bool>("hardware.oled.enabled")) {
         switch (config.get<int>("hardware.oled.type")) {
             case 0:

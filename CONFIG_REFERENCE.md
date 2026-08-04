@@ -257,6 +257,14 @@ For each LED type (status, brew, steam):
 - **Default**: `false`
 - **Description**: Enable pressure sensor
 
+### `hardware.sensors.pressure.type`
+- **Type**: Integer (enum)
+- **Default**: `0`
+- **Valid Values**:
+    - `0`: Honeywell ABP2 (I2C)
+    - `1`: Analog 0.5-4.5V transducer via ADS1115 (I2C)
+- **Description**: Pressure sensor type. For type `1`, the transducer and the ADS1115 are powered with 5 VDC and the transducer output (0.5-4.5 V) is connected to AIN0. Since the ADS1115 runs at 5 V, its SDA/SCL lines must be connected to the ESP32 through a bidirectional logic level converter (5 V ↔ 3.3 V). The pressure range defaults to 0-12 bar and can be adjusted via `ADS1115_pmax` in `src/hardware/pressureSensor.h`.
+
 ## Scale
 ### `hardware.sensors.scale.enabled`
 - **Type**: Boolean

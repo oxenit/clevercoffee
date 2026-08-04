@@ -353,6 +353,7 @@ class Config {
             // Hardware - Sensors
             _configDefs.emplace("hardware.sensors.temperature.type", ConfigDef::forInt(0, 0, 1));
             _configDefs.emplace("hardware.sensors.pressure.enabled", ConfigDef::forBool(false));
+            _configDefs.emplace("hardware.sensors.pressure.type", ConfigDef::forInt(0, 0, 1));
             _configDefs.emplace("hardware.sensors.watertank.enabled", ConfigDef::forBool(false));
             _configDefs.emplace("hardware.sensors.watertank.mode", ConfigDef::forInt(Switch::NORMALLY_CLOSED, 0, 1));
 

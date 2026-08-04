@@ -58,6 +58,7 @@ static constexpr const char* const logLevels[] = {"TRACE", "DEBUG", "INFO", "WAR
 static constexpr const char* const oledTypes[] = {"SH1106 (1.3\")", "SSD1306 (0.96\")"};
 static constexpr const char* const oledAddresses[] = {"0x3C", "0x3D"};
 static constexpr const char* const tempSensorTypes[] = {"TSIC306", "Dallas DS18B20"};
+static constexpr const char* const pressureSensorTypes[] = {"Honeywell ABP2 (I2C)", "Analog 0.5-4.5V (ADS1115)"};
 static constexpr const char* const scaleTypes[] = {"HX711 (2 load cell controllers)", "HX711 (1 load cell controller)", "Bluetooth"};
 
 void ParameterRegistry::initialize(Config& config) {
@@ -1154,6 +1155,19 @@ void ParameterRegistry::initialize(Config& config) {
         2411,
         nullptr,
         "Enable pressure sensor for monitoring brew pressure",
+        [] { return true; },
+        true
+    );
+
+    addEnumConfigParam(
+        "hardware.sensors.pressure.type",
+        "Pressure Sensor Type",
+        sHardwareSensorSection,
+        2412,
+        nullptr,
+        pressureSensorTypes,
+        2,
+        "Type of pressure sensor connected",
         [] { return true; },
         true
     );

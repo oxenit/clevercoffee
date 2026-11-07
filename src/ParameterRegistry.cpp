@@ -963,7 +963,7 @@ void ParameterRegistry::initialize(Config& config) {
         sHardwareRelaySection,
         2104,
         nullptr,
-        "The pump is driven by an AC dimmer module instead of a relay: dimmer gate input on the pump pin, zero crossing output on the ZC pin. Enables variable pump power for pressure profiling",
+        "The pump is driven by an AC dimmer module instead of a relay: dimmer gate input on the pump pin, zero crossing output on the ZC pin. Power the dimmer logic with 3.3 V, not 5 V. Enables variable pump power for pressure profiling",
         [] { return true; },
         true
     );

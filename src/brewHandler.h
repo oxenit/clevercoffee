@@ -57,7 +57,7 @@ inline bool checkBrewActive() {
  * @brief True if the brew should be pressure profiled (dimmer modulates pump power towards pressure targets)
  */
 inline bool pressureProfilingEnabled() {
-    return config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled");
+    return !pumpProfilingFaulted && config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled");
 }
 
 /**
@@ -267,6 +267,7 @@ inline bool brew() {
                 startingTime = millis();
                 currBrewTime = 0;   // reset currBrewTime, last brew is still stored
                 currBrewWeight = 0; // reset currBrewWeight for new brew
+                pumpProfilingFaulted = false; // give pressure profiling a new chance after a sensor fault in the last brew
 
                 LOG(INFO, "Brew started");
 

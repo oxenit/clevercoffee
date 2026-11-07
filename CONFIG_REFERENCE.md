@@ -105,7 +105,7 @@ This document describes all configuration parameters available in the `config.js
 ### `brew.profiling.enabled`
 - **Type**: Boolean
 - **Default**: `false`
-- **Description**: Modulates the pump power during the brew to follow the configured pressure targets. Requires the pressure sensor (`hardware.sensors.pressure.enabled`) and the pump dimmer (`hardware.pump.dimmer.enabled`)
+- **Description**: Modulates the pump power during the brew to follow the configured pressure targets. Requires the pressure sensor (`hardware.sensors.pressure.enabled`) and the pump dimmer (`hardware.pump.dimmer.enabled`). If the pressure sensor stops responding during a brew, that brew continues at full pump power
 
 ### `brew.profiling.pre_infusion_pressure`
 - **Type**: Double (bar)
@@ -264,7 +264,7 @@ For each LED type (status, brew, steam):
 ### `hardware.pump.dimmer.enabled`
 - **Type**: Boolean
 - **Default**: `false`
-- **Description**: The pump is driven by an AC dimmer module (e.g. RobotDyn type) instead of a relay: dimmer gate/PWM input on the pump pin (GPIO 27), dimmer zero crossing output on the ZC pin (GPIO 18). The pump power is then modulated by pulse skip modulation, enabling pressure profiling. Regular on/off operation (backflush, manual flush, hot water) keeps working at full power
+- **Description**: The pump is driven by an AC dimmer module (e.g. RobotDyn type) instead of a relay: dimmer gate/PWM input on the pump pin (GPIO 27), dimmer zero crossing output on the ZC pin (GPIO 18). Power the dimmer logic side with 3.3 V, since its zero crossing output is pulled up to its supply and the ESP32 inputs are not 5 V tolerant. The pump power is then modulated by pulse skip modulation, enabling pressure profiling. Regular on/off operation (backflush, manual flush, hot water) keeps working at full power
 
 ## Sensors
 

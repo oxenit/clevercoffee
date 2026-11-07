@@ -7,7 +7,23 @@
 #include "pumpControl.h"
 
 void IRAM_ATTR pumpZeroCrossIsr() {
+    // micros() is IRAM safe on the ESP32 Arduino core
+    const uint32_t now = micros();
+
+    if (now - pumpLastZeroCrossUs < pumpZeroCrossDebounceUs) {
+        return;
+    }
+
+    pumpLastZeroCrossUs = now;
+
     if (!pumpPsmActive) {
+        return;
+    }
+
+    // only decide at the start of a full mains cycle, the gate level is kept for both half-cycles
+    pumpPsmHalfCycle = !pumpPsmHalfCycle;
+
+    if (pumpPsmHalfCycle == false) {
         return;
     }
 

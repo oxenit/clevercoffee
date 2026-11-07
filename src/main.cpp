@@ -1374,7 +1374,17 @@ void loopPid() {
             previousMillisPressure = currentMillisPressure;
             inputPressure = measurePressure();
             inputPressureFilter = filterPressureValue(inputPressure);
-            updatePumpPressureControl(inputPressureFilter);
+
+            if (pumpPsmActive && pressureSensorConsecutiveErrors >= pressureProfilingMaxSensorErrors) {
+                // never regulate on a stale reading: finish this brew at full pump power, like without profiling
+                LOG(WARNING, "Pressure sensor not responding, continuing brew at full pump power");
+                pumpProfilingFaulted = true;
+                stopPumpProfiling();
+                pumpRelay->on();
+            }
+            else {
+                updatePumpPressureControl(inputPressureFilter);
+            }
         }
     }
 

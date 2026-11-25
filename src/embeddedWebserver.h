@@ -607,6 +607,82 @@ inline void serverSetup() {
             }
         });
 
+    server.on("/profiles", HTTP_GET, [](AsyncWebServerRequest* request) {
+        if (!authenticate(request)) {
+            return request->requestAuthentication();
+        }
+
+        // the list is only modified by the main loop; a GET racing an update may at worst return the previous list
+        JsonDocument doc;
+        serializePressureProfiles(doc);
+        doc["maxProfiles"] = kMaxPressureProfiles;
+        doc["maxPhases"] = kMaxProfilePhases;
+        doc["profilingAvailable"] = config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled");
+        doc["pressureSensor"] = config.get<bool>("hardware.sensors.pressure.enabled");
+
+        AsyncResponseStream* response = request->beginResponseStream("application/json");
+        serializeJson(doc, *response);
+        request->send(response);
+    });
+
+    server.on(
+        "/profiles", HTTP_POST,
+        [](AsyncWebServerRequest* request) {
+            if (!authenticate(request)) {
+                return request->requestAuthentication();
+            }
+
+            // the body handler below stores the validation result as a strdup'ed C string ("" = success),
+            // the web server releases _tempObject with free() when the request is destroyed
+            const auto* result = static_cast<const char*>(request->_tempObject);
+
+            if (result == nullptr) {
+                request->send(400, "application/json", R"({"success": false, "message": "Empty request"})");
+                return;
+            }
+
+            const bool success = result[0] == '\0';
+            JsonDocument doc;
+            doc["success"] = success;
+            doc["message"] = success ? "Profiles saved" : result;
+
+            String json;
+            serializeJson(doc, json);
+            request->send(success ? 200 : 400, "application/json", json);
+        },
+        nullptr,
+        [](AsyncWebServerRequest* request, const uint8_t* data, const size_t len, const size_t index, const size_t total) {
+            // the body arrives before the request handler runs, so authentication has to be checked here as well:
+            // without a result the request handler answers with the authentication request and nothing is queued
+            if (!authenticate(request)) {
+                return;
+            }
+
+            static String body;
+
+            if (index == 0) {
+                body = "";
+
+                if (total > kPressureProfilesMaxJsonSize) {
+                    request->_tempObject = strdup("Profiles document too large");
+                    return;
+                }
+
+                body.reserve(total);
+            }
+
+            if (request->_tempObject != nullptr) {
+                return; // already rejected
+            }
+
+            body.concat(reinterpret_cast<const char*>(data), len);
+
+            if (index + len == total) {
+                request->_tempObject = strdup(queuePressureProfilesUpdate(body).c_str());
+                body = "";
+            }
+        });
+
     server.on("/restart", HTTP_POST, [](AsyncWebServerRequest* request) {
         if (!authenticate(request)) {
             return request->requestAuthentication();

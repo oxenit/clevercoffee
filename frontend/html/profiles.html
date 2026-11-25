@@ -1,0 +1,156 @@
+%HEADER%
+
+    <script>
+        if (window.appCreated == true) {
+            import('/js/profiles.js?v=1')
+        } else {
+            window.addEventListener('appCreated', () => {
+                import('/js/profiles.js?v=1')
+            })
+        }
+    </script>
+
+    <div id="content">
+        <div class="container my-2">
+            <br/>
+            <div class="underlined-heading mb-4" id="epilog"><h3>Pressure Profiles</h3></div>
+
+            <div v-if="loading" class="text-muted">Loading profiles...</div>
+            <div v-else-if="loadError" class="alert alert-danger">{{ loadError }}</div>
+
+            <template v-else>
+                <div v-if="!profilingAvailable" class="alert alert-warning">
+                    Profiles only run when <strong>pressure profiling</strong> (Settings) and the <strong>pump dimmer</strong> (Hardware) are enabled.
+                    Otherwise brews use the plain pump relay.
+                </div>
+
+                <!-- Active profile -->
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title mb-3">Active profile</h5>
+                        <select class="form-select" v-model.number="selected">
+                            <option :value="-1">Simple mode (pre-infusion / brew pressure settings)</option>
+                            <option v-for="(profile, index) in profiles" :key="index" :value="index">{{ profile.label || ('Profile ' + (index + 1)) }}</option>
+                        </select>
+                        <p class="form-text mb-0">
+                            A profile defines the whole shot: it replaces pre-infusion and brew by time, the brew ends after its last phase.
+                            Brew by weight still stops the shot early. Changes are applied once no brew is running.
+                            Profiles use the GaggiMate JSON format: pressure and fixed power phases can be imported, flow targets cannot.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Profile list -->
+                <div class="card mb-4" v-for="(profile, pIndex) in profiles" :key="pIndex">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center gap-2 mb-3">
+                            <input class="form-control form-control-lg fw-bold" maxlength="23" v-model="profile.label" placeholder="Profile name">
+                            <span class="badge bg-secondary">{{ totalDuration(profile) }} s</span>
+                            <button class="btn btn-outline-secondary" title="Export as JSON" @click="exportProfile(profile)"><span class="fa-solid fa-download"></span></button>
+                            <button class="btn btn-outline-secondary" title="Duplicate" @click="duplicateProfile(pIndex)" :disabled="profiles.length >= maxProfiles"><span class="fa-solid fa-copy"></span></button>
+                            <button class="btn btn-outline-danger" title="Delete" @click="deleteProfile(pIndex)"><span class="fa-solid fa-trash"></span></button>
+                        </div>
+
+                        <div v-if="needsSensor(profile) && !pressureSensor" class="alert alert-warning py-2">
+                            This profile uses pressure targets but the pressure sensor is disabled: brews will run without profile.
+                        </div>
+
+                        <svg class="w-100 border rounded" viewBox="0 0 600 120" preserveAspectRatio="none" style="height: 120px">
+                            <line v-for="bar in [3, 6, 9]" :key="bar" x1="0" :x2="chartWidth" :y1="chartY(bar)" :y2="chartY(bar)" stroke="#dee2e6" stroke-width="1"/>
+                            <text v-for="bar in [3, 6, 9]" :key="'l' + bar" x="4" :y="chartY(bar) - 2" font-size="10" fill="#6c757d">{{ bar }} bar</text>
+                            <polyline v-for="(segment, sIndex) in chartSegments(profile)" :key="sIndex" :points="segment.points" fill="none"
+                                      :stroke="segment.mode === 'power' ? '#fd7e14' : '#0d6efd'" stroke-width="2" :stroke-dasharray="segment.mode === 'power' ? '6 3' : ''"/>
+                        </svg>
+                        <p class="form-text mt-1 mb-3"><span style="color: #0d6efd">&#9644;</span> pressure [bar] &nbsp; <span style="color: #fd7e14">&#9476;</span> pump power (full height = 100)</p>
+
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead>
+                                <tr>
+                                    <th>Phase</th>
+                                    <th>Pump</th>
+                                    <th>Target</th>
+                                    <th>Max duration [s]</th>
+                                    <th>Transition</th>
+                                    <th title="Ramp length, 0 = over the whole phase">Ramp [s]</th>
+                                    <th title="Leave the phase early when one of these conditions is met">Exit when</th>
+                                    <th></th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                <tr v-for="(phase, phIndex) in profile.phases" :key="phIndex">
+                                    <td><input class="form-control form-control-sm" maxlength="23" v-model="phase.name" style="min-width: 7rem"></td>
+                                    <td>
+                                        <select class="form-select form-select-sm" v-model="phase.mode" style="min-width: 6.5rem">
+                                            <option value="pressure">Pressure</option>
+                                            <option value="power">Power</option>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <div class="input-group input-group-sm" style="min-width: 7rem">
+                                            <input class="form-control" type="number" min="0" :max="phase.mode === 'power' ? 100 : 12" step="0.1" v-model.number="phase.value">
+                                            <span class="input-group-text">{{ phase.mode === 'power' ? 'pct' : 'bar' }}</span>
+                                        </div>
+                                    </td>
+                                    <td><input class="form-control form-control-sm" type="number" min="0" max="300" step="0.5" v-model.number="phase.duration" style="min-width: 5rem"></td>
+                                    <td>
+                                        <select class="form-select form-select-sm" v-model="phase.transition" style="min-width: 7rem">
+                                            <option v-for="t in transitions" :key="t" :value="t">{{ t }}</option>
+                                        </select>
+                                    </td>
+                                    <td><input class="form-control form-control-sm" type="number" min="0" max="300" step="0.5" v-model.number="phase.transitionDuration" :disabled="phase.transition === 'instant'" style="min-width: 4.5rem"></td>
+                                    <td style="min-width: 17rem">
+                                        <div class="input-group input-group-sm mb-1" v-for="(target, tIndex) in phase.targets" :key="tIndex">
+                                            <select class="form-select" v-model="target.type">
+                                                <option value="volumetric">Weight [g]</option>
+                                                <option value="pressure">Pressure [bar]</option>
+                                            </select>
+                                            <select class="form-select" v-model="target.operator" style="max-width: 3.5rem">
+                                                <option value="gte">&ge;</option>
+                                                <option value="lte">&le;</option>
+                                            </select>
+                                            <input class="form-control" type="number" min="0" step="0.1" v-model.number="target.value" style="max-width: 5rem">
+                                            <button class="btn btn-outline-danger" title="Remove condition" @click="phase.targets.splice(tIndex, 1)"><span class="fa-solid fa-xmark"></span></button>
+                                        </div>
+                                        <button class="btn btn-sm btn-link p-0" @click="addTarget(phase)" v-if="phase.targets.length < maxTargets">+ condition</button>
+                                    </td>
+                                    <td class="text-nowrap">
+                                        <button class="btn btn-sm btn-outline-secondary" title="Move up" @click="movePhase(profile, phIndex, -1)" :disabled="phIndex === 0"><span class="fa-solid fa-arrow-up"></span></button>
+                                        <button class="btn btn-sm btn-outline-danger ms-1" title="Remove" @click="profile.phases.splice(phIndex, 1)" :disabled="profile.phases.length <= 1"><span class="fa-solid fa-xmark"></span></button>
+                                    </td>
+                                </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" @click="addPhase(profile)" :disabled="profile.phases.length >= maxPhases">
+                            <span class="fa-solid fa-plus me-1"></span> Add phase
+                        </button>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mb-4">
+                    <button class="btn btn-outline-primary" @click="addProfile" :disabled="profiles.length >= maxProfiles">
+                        <span class="fa-solid fa-plus me-1"></span> New profile
+                    </button>
+                    <label class="btn btn-outline-primary mb-0" :class="{ disabled: profiles.length >= maxProfiles }">
+                        <span class="fa-solid fa-upload me-1"></span> Import JSON
+                        <input type="file" accept=".json,application/json" class="d-none" @change="importProfiles">
+                    </label>
+                    <button class="btn btn-primary" @click="save" :disabled="saving">
+                        <span class="fa-solid fa-floppy-disk me-1"></span> {{ saving ? 'Saving...' : 'Save' }}
+                    </button>
+                    <button class="btn btn-outline-secondary" @click="load">Discard changes</button>
+                </div>
+
+                <div v-if="warnings.length" class="alert alert-warning">
+                    <ul class="mb-0"><li v-for="(warning, wIndex) in warnings" :key="wIndex">{{ warning }}</li></ul>
+                </div>
+                <div v-if="message" class="alert" :class="success ? 'alert-success' : 'alert-danger'">{{ message }}</div>
+            </template>
+        </div>
+    </div>
+
+</div>
+
+</body>
+</html>

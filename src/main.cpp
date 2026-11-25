@@ -909,6 +909,8 @@ void setup() {
         LOG(ERROR, "Failed to load config from filesystem!");
     }
 
+    loadPressureProfiles();
+
     if (config.get<bool>("hardware.leds.steam.enabled")) {
         LOG(WARNING, "Steam LED interferes with USB console communication");
     }
@@ -1247,6 +1249,11 @@ void loop() {
 
     // Handle automatic config save
     ParameterRegistry::getInstance().processPeriodicSave();
+
+    // Apply pressure profile changes from the web interface, never in the middle of a brew
+    if (!checkBrewActive()) {
+        processPendingPressureProfiles();
+    }
 }
 
 void loopPid() {
@@ -1376,7 +1383,7 @@ void loopPid() {
             inputPressure = measurePressure();
             inputPressureFilter = filterPressureValue(inputPressure);
 
-            if (pumpPsmActive && pressureSensorConsecutiveErrors >= pressureProfilingMaxSensorErrors) {
+            if (pumpPsmActive && !pumpFixedPowerMode && pressureSensorConsecutiveErrors >= pressureProfilingMaxSensorErrors) {
                 // never regulate on a stale reading: finish this brew at full pump power, like without profiling
                 LOG(WARNING, "Pressure sensor not responding, continuing brew at full pump power");
                 pumpProfilingFaulted = true;
@@ -1393,6 +1400,12 @@ void loopPid() {
     if (pumpPsmActive && !checkBrewActive()) {
         stopPumpProfiling();
         pumpRelay->off();
+    }
+
+    // a brew reset straight to idle (e.g. emergency stop) skips kBrewFinished, drop its profile here
+    if (brewUsesProfile && currBrewState == kBrewIdle) {
+        pressureProfileRunner.stop();
+        brewUsesProfile = false;
     }
 
     checkSteamSwitch();

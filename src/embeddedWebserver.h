@@ -612,19 +612,14 @@ inline void serverSetup() {
             return request->requestAuthentication();
         }
 
-        // streamed one profile at a time, under the lock the main loop takes while it replaces the list
-        AsyncResponseStream* response = request->beginResponseStream("application/json");
-        response->printf(R"({"maxProfiles":%u,"maxPhases":%u,"maxTargets":%u,"profilingAvailable":%s,"pressureSensor":%s,)", kMaxPressureProfiles, kMaxProfilePhases, kMaxPhaseTargets,
-                         config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") ? "true" : "false", config.get<bool>("hardware.sensors.pressure.enabled") ? "true" : "false");
+        char prefix[128];
+        snprintf(prefix, sizeof(prefix), R"({"maxProfiles":%u,"maxPhases":%u,"maxTargets":%u,"profilingAvailable":%s,"pressureSensor":%s,)", kMaxPressureProfiles, kMaxProfilePhases, kMaxPhaseTargets,
+                 config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") ? "true" : "false", config.get<bool>("hardware.sensors.pressure.enabled") ? "true" : "false");
 
-        std::lock_guard<std::mutex> lock(pressureProfilesMutex);
+        // chunked, one profile per piece: the full list does not fit in a single response buffer
+        const auto stream = std::make_shared<PressureProfilesJsonStream>(prefix);
 
-        if (!writePressureProfilesBody(*response)) {
-            // the JSON is cut off, the page refuses it and cannot save (and lose) a partial list
-            LOG(ERROR, "Out of memory while sending the pressure profiles");
-        }
-
-        request->send(response);
+        request->send(request->beginChunkedResponse("application/json", [stream](uint8_t* buffer, const size_t maxLength, size_t) { return stream->read(buffer, maxLength); }));
     });
 
     server.on(
@@ -670,7 +665,10 @@ inline void serverSetup() {
                     return;
                 }
 
-                body.reserve(total);
+                if (!body.reserve(total)) {
+                    request->_tempObject = strdup("Out of memory");
+                    return;
+                }
             }
 
             if (request->_tempObject != nullptr) {

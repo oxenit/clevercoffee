@@ -248,70 +248,194 @@ inline bool parseProfilePhase(JsonObjectConst json, ProfilePhase& phase, String&
 }
 
 /**
+ * @brief Parse and validate one profile object
+ */
+inline bool parsePressureProfile(JsonObjectConst profileJson, PressureProfile& profile, const uint8_t index, String& error) {
+    profile = PressureProfile();
+
+    const char* name = profileJson["label"] | "";
+
+    if (strlen(name) == 0) {
+        error = String("Profile ") + (index + 1) + " has no label";
+        return false;
+    }
+
+    strlcpy(profile.name, name, sizeof(profile.name));
+
+    const JsonArrayConst phases = profileJson["phases"].as<JsonArrayConst>();
+
+    if (phases.isNull() || phases.size() == 0 || phases.size() > kMaxProfilePhases) {
+        error = String("Profile '") + profile.name + "' needs 1 to " + kMaxProfilePhases + " phases";
+        return false;
+    }
+
+    for (JsonObjectConst phaseJson : phases) {
+        String phaseError;
+
+        if (!parseProfilePhase(phaseJson, profile.phases[profile.phaseCount], phaseError)) {
+            error = String("Profile '") + profile.name + "', phase " + (profile.phaseCount + 1) + ": " + phaseError;
+            return false;
+        }
+
+        profile.phaseCount++;
+    }
+
+    if (profile.totalDuration() <= 0.0f) {
+        error = String("Profile '") + profile.name + "' has a total duration of 0 s";
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief Reader over a memory buffer that keeps its position between deserializeJson() calls, so the profiles
+ *        document can be parsed one profile at a time. ArduinoJson reads from it byte by byte and stops right
+ *        after the value it parsed.
+ */
+class ProfilesJsonReader {
+    public:
+        ProfilesJsonReader(const char* data, const size_t length) :
+            pos_(data), end_(data + length) {
+        }
+
+        int read() {
+            return pos_ < end_ ? static_cast<unsigned char>(*pos_++) : -1;
+        }
+
+        size_t readBytes(char* buffer, const size_t length) {
+            size_t count = 0;
+
+            while (count < length && pos_ < end_) {
+                buffer[count++] = *pos_++;
+            }
+
+            return count;
+        }
+
+        /**
+         * @brief Skip whitespace and return the next character without consuming it, 0 at the end
+         */
+        char peek() {
+            while (pos_ < end_ && (*pos_ == ' ' || *pos_ == '\t' || *pos_ == '\n' || *pos_ == '\r')) {
+                pos_++;
+            }
+
+            return pos_ < end_ ? *pos_ : '\0';
+        }
+
+        /**
+         * @brief Consume the next non-whitespace character if it is the expected one
+         */
+        bool consume(const char expected) {
+            if (peek() != expected) {
+                return false;
+            }
+
+            pos_++;
+
+            return true;
+        }
+
+    private:
+        const char* pos_;
+        const char* end_;
+};
+
+/**
  * @brief Parse and validate a profiles document
  *
- * @param doc parsed JSON
+ *        A full document (8 profiles x 8 phases with exit targets, ~25 kB of JSON) needs more than 50 kB as a
+ *        JsonDocument, which the ESP32 cannot spare next to the request body while WiFi is running. So the document
+ *        is never loaded as a whole: a filtered pass checks the syntax and reads "selected", then the "profiles"
+ *        array is walked with one small JsonDocument per profile.
+ *
+ * @param json document text
+ * @param length length of the text
  * @param profiles output array, kMaxPressureProfiles entries
  * @param count number of parsed profiles
  * @param selected parsed selection
  * @param error human readable reason when the document is rejected
  * @return true if the document is valid
  */
-inline bool parsePressureProfiles(const JsonDocument& doc, PressureProfile* profiles, uint8_t& count, int8_t& selected, String& error) {
-    const JsonArrayConst list = doc["profiles"].as<JsonArrayConst>();
+inline bool parsePressureProfiles(const char* json, const size_t length, PressureProfile* profiles, uint8_t& count, int8_t& selected, String& error) {
+    count = 0;
 
-    if (list.isNull()) {
+    // pass 1: syntax check of the whole document, keeping only "selected"
+    JsonDocument filter;
+    filter["selected"] = true;
+    JsonDocument header;
+
+    if (const DeserializationError jsonError = deserializeJson(header, json, length, DeserializationOption::Filter(filter))) {
+        error = String("Invalid JSON: ") + jsonError.c_str();
+        return false;
+    }
+
+    if (!header.is<JsonObjectConst>()) {
         error = "'profiles' must be an array";
         return false;
     }
 
-    if (list.size() > kMaxPressureProfiles) {
-        error = String("At most ") + kMaxPressureProfiles + " profiles are supported";
+    // pass 2: walk the top level members up to the "profiles" array (the syntax is known to be valid here)
+    ProfilesJsonReader reader(json, length);
+    JsonDocument skipAll;
+    skipAll.set(false); // filter that drops everything: deserializeJson() then just consumes one value
+    bool found = false;
+
+    reader.consume('{');
+
+    while (reader.peek() == '"') {
+        JsonDocument key;
+        deserializeJson(key, reader);
+
+        reader.consume(':');
+
+        const char* keyName = key.as<const char*>();
+
+        if (keyName != nullptr && strcmp(keyName, "profiles") == 0) {
+            found = reader.consume('[');
+            break;
+        }
+
+        JsonDocument skipped;
+        deserializeJson(skipped, reader, DeserializationOption::Filter(skipAll));
+
+        reader.consume(',');
+    }
+
+    if (!found) {
+        error = "'profiles' must be an array";
         return false;
     }
 
-    count = 0;
-
-    for (JsonObjectConst profileJson : list) {
-        PressureProfile& profile = profiles[count];
-        profile = PressureProfile();
-
-        const char* name = profileJson["label"] | "";
-
-        if (strlen(name) == 0) {
-            error = String("Profile ") + (count + 1) + " has no label";
+    // pass 3: one profile at a time
+    while (reader.peek() != ']') {
+        if (count >= kMaxPressureProfiles) {
+            error = String("At most ") + kMaxPressureProfiles + " profiles are supported";
             return false;
         }
 
-        strlcpy(profile.name, name, sizeof(profile.name));
+        JsonDocument doc;
 
-        const JsonArrayConst phases = profileJson["phases"].as<JsonArrayConst>();
-
-        if (phases.isNull() || phases.size() == 0 || phases.size() > kMaxProfilePhases) {
-            error = String("Profile '") + profile.name + "' needs 1 to " + kMaxProfilePhases + " phases";
+        if (const DeserializationError jsonError = deserializeJson(doc, reader)) {
+            error = jsonError == DeserializationError::NoMemory ? String("Out of memory") : String("Invalid JSON: ") + jsonError.c_str();
             return false;
         }
 
-        for (JsonObjectConst phaseJson : phases) {
-            String phaseError;
-
-            if (!parseProfilePhase(phaseJson, profile.phases[profile.phaseCount], phaseError)) {
-                error = String("Profile '") + profile.name + "', phase " + (profile.phaseCount + 1) + ": " + phaseError;
-                return false;
-            }
-
-            profile.phaseCount++;
+        if (doc.overflowed()) {
+            error = "Out of memory";
+            return false;
         }
 
-        if (profile.totalDuration() <= 0.0f) {
-            error = String("Profile '") + profile.name + "' has a total duration of 0 s";
+        if (!parsePressureProfile(doc.as<JsonObjectConst>(), profiles[count], count, error)) {
             return false;
         }
 
         count++;
+        reader.consume(',');
     }
 
-    const int selectedIndex = doc["selected"] | -1;
+    const int selectedIndex = header["selected"] | -1;
 
     if (selectedIndex < -1 || selectedIndex >= count) {
         error = "'selected' must be -1 (simple mode) or the index of an existing profile";
@@ -365,33 +489,155 @@ bool writeProfilesLiteral(Writer& out, const char* text) {
 }
 
 /**
- * @brief Stream the members "selected" and "profiles" plus the closing brace of the profiles document, one profile
- *        at a time so only a single profile is held as a JsonDocument (the full list would be ~25 kB of JSON).
- *        The caller writes the opening brace and any members before.
+ * @brief Serialize one profile of the live list
  *
- * @param out anything with write(const uint8_t*, size_t): a File, an AsyncResponseStream, ...
+ * @return false if the index is out of range or there is not enough memory
+ */
+inline bool pressureProfileToJson(const uint8_t index, String& out) {
+    out = "";
+
+    if (index >= pressureProfileCount) {
+        return false;
+    }
+
+    JsonDocument doc;
+    serializePressureProfile(pressureProfiles[index], doc);
+
+    if (doc.overflowed()) {
+        return false;
+    }
+
+    const size_t length = measureJson(doc);
+
+    return out.reserve(length + 1) && serializeJson(doc, out) == length;
+}
+
+/**
+ * @brief The members "selected" and "profiles" up to the opening bracket of the list
+ */
+inline String pressureProfilesJsonHeader() {
+    char header[40];
+    snprintf(header, sizeof(header), "\"selected\":%d,\"profiles\":[", selectedPressureProfile);
+
+    return header;
+}
+
+/**
+ * @brief Write the members "selected" and "profiles" plus the closing brace of the profiles document, one profile
+ *        at a time so the full list (~25 kB of JSON) is never held in memory. The caller writes the opening brace.
+ *
+ * @param out anything with write(const uint8_t*, size_t), e.g. a File
  * @return false if a profile could not be serialized (out of memory) or a write came up short (filesystem full),
  *         the output is incomplete then
  */
 template <typename Writer>
 bool writePressureProfilesBody(Writer& out) {
-    char selected[32];
-    snprintf(selected, sizeof(selected), "\"selected\":%d,\"profiles\":[", selectedPressureProfile);
-    if (!writeProfilesLiteral(out, selected)) {
+    if (!writeProfilesLiteral(out, pressureProfilesJsonHeader().c_str())) {
         return false;
     }
 
-    for (uint8_t i = 0; i < pressureProfileCount; i++) {
-        JsonDocument doc;
-        serializePressureProfile(pressureProfiles[i], doc);
+    String text;
 
-        if (doc.overflowed() || (i > 0 && !writeProfilesLiteral(out, ",")) || serializeJson(doc, out) != measureJson(doc)) {
+    for (uint8_t i = 0; i < pressureProfileCount; i++) {
+        if (!pressureProfileToJson(i, text) || (i > 0 && !writeProfilesLiteral(out, ",")) || !writeProfilesLiteral(out, text.c_str())) {
             return false;
         }
     }
 
     return writeProfilesLiteral(out, "]}");
 }
+
+/**
+ * @brief Produces the profiles document piece by piece for a chunked HTTP response: a 25 kB response buffer cannot be
+ *        allocated reliably while WiFi is running (and the web server aborts when that allocation fails), so only one
+ *        profile is serialized at a time. The live list is locked while a profile is read; an update applied between
+ *        two pieces can at worst produce a mix of the old and new list, which the next reload corrects.
+ */
+class PressureProfilesJsonStream {
+    public:
+        /**
+         * @param prefix opening brace and any members before "selected", e.g. {"maxProfiles":8,
+         */
+        explicit PressureProfilesJsonStream(const String& prefix) :
+            piece_(prefix) {
+        }
+
+        /**
+         * @brief Copy the next part of the document
+         *
+         * @return number of bytes written to buffer, 0 at the end (or when out of memory, the JSON is cut off then)
+         */
+        size_t read(uint8_t* buffer, const size_t maxLength) {
+            while (offset_ >= piece_.length()) {
+                if (!nextPiece()) {
+                    return 0;
+                }
+            }
+
+            size_t length = piece_.length() - offset_;
+
+            if (length > maxLength) {
+                length = maxLength;
+            }
+
+            memcpy(buffer, piece_.c_str() + offset_, length);
+            offset_ += length;
+
+            return length;
+        }
+
+    private:
+        bool nextPiece() {
+            if (stage_ == Stage::Closing || stage_ == Stage::Done) {
+                piece_ = "";
+                offset_ = 0;
+                stage_ = Stage::Done;
+                return false;
+            }
+
+            std::lock_guard<std::mutex> lock(pressureProfilesMutex);
+            offset_ = 0;
+
+            if (stage_ == Stage::Header) {
+                piece_ = pressureProfilesJsonHeader();
+                stage_ = Stage::Profiles;
+                return true;
+            }
+
+            if (stage_ == Stage::Profiles && index_ < pressureProfileCount) {
+                String profile;
+
+                if (!pressureProfileToJson(index_, profile)) {
+                    piece_ = "";
+                    stage_ = Stage::Done;
+                    return false;
+                }
+
+                piece_ = index_ > 0 ? "," : "";
+                piece_ += profile;
+                index_++;
+
+                return true;
+            }
+
+            piece_ = "]}";
+            stage_ = Stage::Closing;
+
+            return true;
+        }
+
+        enum class Stage : uint8_t {
+            Header,
+            Profiles,
+            Closing,
+            Done,
+        };
+
+        String piece_;
+        size_t offset_ = 0;
+        Stage stage_ = Stage::Header;
+        uint8_t index_ = 0;
+};
 
 inline ProfilePhase& addDefaultPhase(PressureProfile& profile, const char* name, const float pressure, const float duration, const ProfileTransition transition, const float transitionDuration) {
     ProfilePhase& phase = profile.phases[profile.phaseCount++];
@@ -469,35 +715,36 @@ inline void loadPressureProfiles() {
     }
 
     if (LittleFS.exists(kPressureProfilesPath)) {
+        String error = "cannot read file";
         File file = LittleFS.open(kPressureProfilesPath, "r");
-        JsonDocument doc;
-        const DeserializationError jsonError = file ? deserializeJson(doc, file) : DeserializationError::IncompleteInput;
+        const size_t size = file ? file.size() : 0;
+
+        // parse into a scratch copy first so a bad file never leaves a half-filled list behind
+        auto* parsed = new (std::nothrow) PendingPressureProfiles();
+        char* content = size > 0 && size <= kPressureProfilesMaxJsonSize ? static_cast<char*>(malloc(size)) : nullptr;
+        const bool read = parsed != nullptr && content != nullptr && file.readBytes(content, size) == size;
 
         if (file) {
             file.close();
         }
 
-        String error = jsonError ? String(jsonError.c_str()) : String();
-        uint8_t count = 0;
-        int8_t selected = -1;
+        const bool valid = read && parsePressureProfiles(content, size, parsed->profiles, parsed->count, parsed->selected, error);
+        free(content);
 
-        // parse into a scratch copy first so a bad file never leaves a half-filled list behind
-        auto* parsed = new PressureProfile[kMaxPressureProfiles];
-
-        if (!jsonError && parsePressureProfiles(doc, parsed, count, selected, error)) {
-            for (uint8_t i = 0; i < count; i++) {
-                pressureProfiles[i] = parsed[i];
+        if (valid) {
+            for (uint8_t i = 0; i < parsed->count; i++) {
+                pressureProfiles[i] = parsed->profiles[i];
             }
 
-            pressureProfileCount = count;
-            selectedPressureProfile = selected;
-            delete[] parsed;
+            pressureProfileCount = parsed->count;
+            selectedPressureProfile = parsed->selected;
+            delete parsed;
 
             LOGF(INFO, "Loaded %u pressure profiles, active: %s", pressureProfileCount, selectedPressureProfile < 0 ? "simple mode" : pressureProfiles[selectedPressureProfile].name);
             return;
         }
 
-        delete[] parsed;
+        delete parsed;
         LOGF(ERROR, "Invalid pressure profiles file (%s), restoring defaults", error.c_str());
     }
 
@@ -515,12 +762,6 @@ inline String queuePressureProfilesUpdate(const String& json) {
         return "Profiles document too large";
     }
 
-    JsonDocument doc;
-
-    if (const DeserializationError jsonError = deserializeJson(doc, json)) {
-        return String("Invalid JSON: ") + jsonError.c_str();
-    }
-
     auto* update = new (std::nothrow) PendingPressureProfiles();
 
     if (update == nullptr) {
@@ -529,7 +770,7 @@ inline String queuePressureProfilesUpdate(const String& json) {
 
     String error;
 
-    if (!parsePressureProfiles(doc, update->profiles, update->count, update->selected, error)) {
+    if (!parsePressureProfiles(json.c_str(), json.length(), update->profiles, update->count, update->selected, error)) {
         delete update;
         return error;
     }

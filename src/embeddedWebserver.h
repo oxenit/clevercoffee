@@ -25,10 +25,13 @@ inline AsyncEventSource events("/events");
 inline double curTemp = 0.0;
 inline double tTemp = 0.0;
 inline double hPower = 0.0;
+inline double pressureValue = 0.0;
+inline bool pressureHistoryEnabled = false; // set from sendTempEvent, the pressure series is only sent when a pressure sensor is enabled
 
-#define HISTORY_LENGTH 600 // 20 mins of values (30 vals/min * 20 min) = 600 (3.6kb)
+#define HISTORY_LENGTH 600                  // 30 mins of values (one value every 3 s)
 
-static int16_t tempHistory[3][HISTORY_LENGTH] = {};
+// current temp, target temp, heater power, pressure (all * 100)
+static int16_t tempHistory[4][HISTORY_LENGTH] = {};
 inline int historyCurrentIndex = 0;
 inline int historyValueCount = 0;
 
@@ -70,6 +73,10 @@ inline String getTempString() {
     doc["currentTemp"] = curTemp;
     doc["targetTemp"] = tTemp;
     doc["heaterPower"] = hPower;
+
+    if (pressureHistoryEnabled) {
+        doc["pressure"] = pressureValue;
+    }
 
     String jsonTemps;
     serializeJson(doc, jsonTemps);
@@ -432,6 +439,12 @@ inline void serverSetup() {
         response->print(tTemp, 2);
         response->print(",\"heaterPower\":");
         response->print(hPower, 2);
+
+        if (pressureHistoryEnabled) {
+            response->print(",\"pressure\":");
+            response->print(pressureValue, 2);
+        }
+
         response->print('}');
         request->send(response);
     });
@@ -473,7 +486,22 @@ inline void serverSetup() {
             response->print(tempHistory[2][i] * 0.01f, 2);
         }
 
-        response->print("]}");
+        response->print(']');
+
+        if (pressureHistoryEnabled) {
+            response->print(",\"pressures\":[");
+            first = true;
+
+            for (int i = mod(historyCurrentIndex - historyValueCount, HISTORY_LENGTH); i != mod(historyCurrentIndex, HISTORY_LENGTH); i = mod(i + 1, HISTORY_LENGTH)) {
+                if (!first) response->print(',');
+                first = false;
+                response->print(tempHistory[3][i] * 0.01f, 2);
+            }
+
+            response->print(']');
+        }
+
+        response->print('}');
 
         request->send(response);
     });
@@ -647,19 +675,27 @@ inline void serverSetup() {
 inline int skippedValues = 0;
 #define SECONDS_TO_SKIP 2
 
-inline void sendTempEvent(const double currentTemp, const double targetTemp, const double heaterPower) {
+/**
+ * @brief Store the current values in the history and push them to connected browsers
+ *
+ * @param pressure current pressure [bar], NAN when no pressure sensor is enabled
+ */
+inline void sendTempEvent(const double currentTemp, const double targetTemp, const double heaterPower, const double pressure) {
     curTemp = currentTemp;
     tTemp = targetTemp;
     hPower = heaterPower;
+    pressureHistoryEnabled = !std::isnan(pressure);
+    pressureValue = pressureHistoryEnabled ? pressure : 0.0;
 
     // save all values in memory to show history
     if (skippedValues > 0 && skippedValues % SECONDS_TO_SKIP == 0) {
         // use array and int value for start index (round robin)
-        // one record (3 int values == 6 bytes) every two seconds, for twenty
-        // minutes -> 3.6kB of static memory
+        // one record (4 int values == 8 bytes) every three seconds, for thirty
+        // minutes -> 4.8kB of static memory
         tempHistory[0][historyCurrentIndex] = static_cast<int16_t>(currentTemp * 100);
         tempHistory[1][historyCurrentIndex] = static_cast<int16_t>(targetTemp * 100);
         tempHistory[2][historyCurrentIndex] = static_cast<int16_t>(heaterPower * 100);
+        tempHistory[3][historyCurrentIndex] = static_cast<int16_t>(pressureValue * 100);
         historyCurrentIndex = (historyCurrentIndex + 1) % HISTORY_LENGTH;
         historyValueCount = min(HISTORY_LENGTH - 1, historyValueCount + 1);
         skippedValues = 0;

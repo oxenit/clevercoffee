@@ -1336,7 +1336,8 @@ void loopPid() {
         websiteUpdateRunning = true;
 
         // send temperatures to website endpoint
-        sendTempEvent(temperature, brewSetpoint, pidOutput / 10); // pidOutput is promill, so /10 to get percent value
+        // pidOutput is promill, so /10 to get percent value
+        sendTempEvent(temperature, brewSetpoint, pidOutput / 10, config.get<bool>("hardware.sensors.pressure.enabled") ? inputPressureFilter : NAN);
 
         lastTempEvent = millis();
 

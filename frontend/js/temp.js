@@ -14,12 +14,17 @@ var targetTempVals = []
 var heaterPowerVals = []
 var tempDates = []
 var heaterDates = []
+var pressureVals = []
+var pressureDates = []
 
 var chartDiv = 'chart-temperature'
 var heaterDiv = 'chart-heater'
+var pressureDiv = 'chart-pressure'
+var pressureCard = 'card-pressure'
 
 let uplotTemp = null;
 let uplotHeater = null;
+let uplotPressure = null;
 
 function addTempData(jsonValue, isSingleValue=false) {
     // add new value(s) to global data arrays and return in a
@@ -129,6 +134,46 @@ function addHeaterData(jsonValue, isSingleValue=false) {
     for (let i = 0; i < heaterPowerVals.length; i++) {
         data[0][i] = heaterDates[i].getTime() / updateInterval 
         data[1][i] = heaterPowerVals[i]
+    }
+
+    return data
+}
+
+function addPressureData(jsonValue, isSingleValue=false) {
+    if (isSingleValue) {
+        pressureDates.push(new Date())
+        pressureVals.push(jsonValue["pressure"])
+    }
+    else {
+        // set data lists to values from history json
+        pressureVals.length = 0
+        pressureVals.push(...jsonValue["pressures"])
+
+        // create dates for all history values (3 seconds between each value)
+        pressureDates.length = 0
+
+        for (let i=pressureVals.length; i>0; i--) {
+            var date = new Date()
+            date.setSeconds(date.getSeconds()-3*i)
+            pressureDates.push(date)
+        }
+    }
+
+    // reduce data if we have too many values (sliding window after that amount)
+    if (pressureDates.length > maxValues) {
+        pressureDates.splice(0, pressureDates.length - maxValues)
+        pressureVals.splice(0, pressureVals.length - maxValues)
+    }
+
+    // use data lists to create data array for uPlot
+    let data = [
+        Array(pressureDates.length),
+        Array(pressureVals.length),
+    ];
+
+    for (let i = 0; i < pressureVals.length; i++) {
+        data[0][i] = pressureDates[i].getTime() / updateInterval
+        data[1][i] = pressureVals[i]
     }
 
     return data
@@ -294,6 +339,50 @@ function makeHeaterChart(data) {
     uplotHeater = new uPlot(opts, sliceData(data, 0, data.length), document.getElementById(heaterDiv));
 }
 
+function makePressureChart(data) {
+    const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const opts = {
+        title: "Pressure History",
+        ...getSize(pressureDiv),
+        tzDate: ts => uPlot.tzDate(new Date(ts * 1e3), localTz),
+        scales: {
+            "bar": {
+                // at least 0-12 bar, grows if the pressure goes higher
+                range: (u, min, max) => [0, Math.max(12, Math.ceil(max ?? 0))],
+            }
+        },
+        series: [
+            {
+                value: "{YYYY}-{MM}-{DD} {HH}:{mm}:{ss}"
+            },
+            {
+                label: "Pressure",
+                scale: "bar",
+                value: (u, v) => v == null ? null : v.toFixed(1) + " bar",
+                stroke: "#D2691E",
+                fill: "#D2691E10",
+                width: 2,
+                show: true,
+                points: { show: false },
+                drawStyle: drawStyles.line,
+                lineInterpolation: lineInterpolations.linear,
+                paths: pathRenderer,
+            }
+        ],
+        axes: [
+            {
+                values: (u, vals, space) => vals.map(v => uPlot.tzDate(new Date(v * 1e3), localTz).toLocaleString("de-DE", tzdateOptions)),
+            },
+            {
+                scale: 'bar',
+                values: (u, vals, space) => vals.map(v => +v.toFixed(1) + " bar"),
+            },
+        ],
+    };
+
+    uplotPressure = new uPlot(opts, sliceData(data, 0, data.length), document.getElementById(pressureDiv));
+}
+
 // append single historic values
 function addPlotData(jsonValue) {    
     function addData(data, u) {
@@ -322,6 +411,12 @@ function addPlotData(jsonValue) {
     if (uplotHeater !== null) {
         addData(heaterData, uplotHeater)
     }
+
+    // the pressure is only sent when a pressure sensor is enabled
+    if ("pressure" in jsonValue && uplotPressure !== null) {
+        let pressureData = addPressureData(jsonValue, true);
+        addData(pressureData, uplotPressure)
+    }
 }
 
 function getSize(selector) {
@@ -339,6 +434,9 @@ window.addEventListener("resize", e => {
     if (uplotHeater !== null) {
         uplotHeater.setSize(getSize(heaterDiv));
     }
+    if (uplotPressure !== null) {
+        uplotPressure.setSize(getSize(pressureDiv));
+    }
 });
 
 
@@ -351,9 +449,20 @@ function getTimeseries() {
             var tempHistory = JSON.parse(xhr.responseText)
             let tempData = addTempData(tempHistory);
             let heaterData = addHeaterData(tempHistory);
+            let pressureData = "pressures" in tempHistory ? addPressureData(tempHistory) : null;
+
+            if (pressureData !== null) {
+                // the card must be visible before creating the chart so getSize() sees its width
+                document.getElementById(pressureCard).style.display = "";
+            }
+
             setTimeout(() => {
                 makeTempChart(tempData);
                 makeHeaterChart(heaterData);
+
+                if (pressureData !== null) {
+                    makePressureChart(pressureData);
+                }
             }, 0);
         }
     }

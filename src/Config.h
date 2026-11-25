@@ -12,6 +12,7 @@
 #include "defaults.h"
 #include "hardware/Relay.h"
 #include "hardware/Switch.h"
+#include "utils/jsonPath.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <map>
@@ -89,23 +90,36 @@ class Config {
         /**
          * @brief Save configuration to file
          *
+         *        The configuration is written to a temporary file that is then renamed over the old one (atomic on
+         *        LittleFS). Writing the config file in place would leave it truncated after a power cut or on a full
+         *        filesystem, and an unreadable config file is replaced by the defaults at the next boot.
+         *
          * @return true if successful, false otherwise
          */
         [[nodiscard]] bool save() const {
-            File file = LittleFS.open(CONFIG_FILE, "w");
+            File file = LittleFS.open(CONFIG_TEMP_FILE, "w");
 
             if (!file) {
                 LOG(ERROR, "Failed to open config file for writing");
                 return false;
             }
 
-            if (serializeJson(_doc, file) == 0) {
-                LOG(ERROR, "Failed to write config to file");
-                file.close();
+            const size_t expected = measureJson(_doc);
+            const size_t written = serializeJson(_doc, file);
+            file.close();
+
+            if (written == 0 || written != expected) {
+                LOG(ERROR, "Failed to write config to file, keeping the previous one");
+                LittleFS.remove(CONFIG_TEMP_FILE);
                 return false;
             }
 
-            file.close();
+            if (!LittleFS.rename(CONFIG_TEMP_FILE, CONFIG_FILE)) {
+                LOG(ERROR, "Failed to replace the config file, keeping the previous one");
+                LittleFS.remove(CONFIG_TEMP_FILE);
+                return false;
+            }
+
             LOG(INFO, "Configuration saved successfully");
 
             return true;
@@ -127,38 +141,27 @@ class Config {
             return true;
         }
 
+        /**
+         * @brief Read a config value by its dot separated path, T{} if the path does not exist
+         *
+         *        This overload takes the path as a C string (all the string literal call sites) and does not allocate.
+         */
+        template <typename T>
+        T get(const char* path) const {
+            static_assert(std::is_arithmetic_v<T> || std::is_same_v<T, String>, "Type must be arithmetic or String");
+
+            JsonVariantConst leaf;
+
+            if (!resolveJsonPath(_doc.as<JsonVariantConst>(), path, leaf)) {
+                return T{};
+            }
+
+            return leaf.as<T>();
+        }
+
         template <typename T>
         T get(const String& path) const {
-            return navigatePath(path, [](JsonVariantConst parent, const String& leafKey) -> T {
-                if (leafKey.isEmpty() || parent.isNull()) {
-                    return T{};
-                }
-
-                auto current = parent[leafKey];
-
-                if constexpr (std::is_same_v<T, bool>) {
-                    return current.as<bool>();
-                }
-                else if constexpr (std::is_same_v<T, int>) {
-                    return current.as<int>();
-                }
-                else if constexpr (std::is_same_v<T, uint8_t>) {
-                    return current.as<uint8_t>();
-                }
-                else if constexpr (std::is_same_v<T, float>) {
-                    return current.as<float>();
-                }
-                else if constexpr (std::is_same_v<T, double>) {
-                    return current.as<double>();
-                }
-                else if constexpr (std::is_same_v<T, String>) {
-                    return current.as<String>();
-                }
-                else {
-                    static_assert(std::is_arithmetic_v<T> || std::is_same_v<T, String>, "Type must be arithmetic or String");
-                    return current.as<T>();
-                }
-            });
+            return get<T>(path.c_str());
         }
 
         template <typename T>
@@ -174,24 +177,6 @@ class Config {
         }
 
     private:
-        template <typename Func>
-        static auto navigatePath(JsonVariantConst root, const String& path, Func&& leafHandler) {
-            auto current = root;
-            int startIndex = 0;
-            int dotIndex;
-
-            while ((dotIndex = path.indexOf('.', startIndex)) != -1) {
-                String segment = path.substring(startIndex, dotIndex);
-                if (current[segment].isNull()) {
-                    return leafHandler(JsonVariantConst(), "");
-                }
-                current = current[segment];
-                startIndex = dotIndex + 1;
-            }
-
-            return leafHandler(current, path.substring(startIndex));
-        }
-
         template <typename Func>
         static auto navigatePath(JsonVariant root, const String& path, Func&& leafHandler, bool createMissing = false) {
             auto current = root;
@@ -216,16 +201,12 @@ class Config {
         }
 
         template <typename Func>
-        auto navigatePath(const String& path, Func&& leafHandler) const {
-            return navigatePath(_doc.as<JsonVariantConst>(), path, std::forward<Func>(leafHandler));
-        }
-
-        template <typename Func>
         auto navigatePath(const String& path, Func&& leafHandler, bool createMissing = false) {
             return navigatePath(_doc.as<JsonVariant>(), path, std::forward<Func>(leafHandler), createMissing);
         }
 
         inline static auto CONFIG_FILE = "/config.json";
+        inline static auto CONFIG_TEMP_FILE = "/config.json.tmp";
 
         JsonDocument _doc;
 

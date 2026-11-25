@@ -1047,6 +1047,17 @@ void setup() {
         serverSetup();
 
         // OTA Updates
+        // Disable interrupt if OTA is starting, otherwise it will not work
+        ArduinoOTA.onStart([]() {
+            disableTimer1();
+            heaterRelay->off();
+        });
+
+        ArduinoOTA.onError([](ota_error_t error) { enableTimer1(); });
+
+        // Enable interrupts if OTA is finished
+        ArduinoOTA.onEnd([]() { enableTimer1(); });
+
         if (WiFi.status() == WL_CONNECTED) {
             otaPass = config.get<String>("system.ota_password");
             ArduinoOTA.setHostname(hostname.c_str()); //  Device name for OTA
@@ -1294,20 +1305,9 @@ void loopPid() {
             }
         }
 
-        ArduinoOTA.handle(); // For OTA
+        ArduinoOTA.handle(); // For OTA, the callbacks are registered once in setup()
 
-        // Disable interrupt if OTA is starting, otherwise it will not work
-        ArduinoOTA.onStart([]() {
-            disableTimer1();
-            heaterRelay->off();
-        });
-
-        ArduinoOTA.onError([](ota_error_t error) { enableTimer1(); });
-
-        // Enable interrupts if OTA is finished
-        ArduinoOTA.onEnd([]() { enableTimer1(); });
-
-        wifiReconnects = 0; // reset wifi reconnects if connected
+        wifiReconnects = 0;  // reset wifi reconnects if connected
     }
     else {
         wifiWasConnected = false;

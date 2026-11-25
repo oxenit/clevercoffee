@@ -612,16 +612,18 @@ inline void serverSetup() {
             return request->requestAuthentication();
         }
 
-        // the list is only modified by the main loop; a GET racing an update may at worst return the previous list
-        JsonDocument doc;
-        serializePressureProfiles(doc);
-        doc["maxProfiles"] = kMaxPressureProfiles;
-        doc["maxPhases"] = kMaxProfilePhases;
-        doc["profilingAvailable"] = config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled");
-        doc["pressureSensor"] = config.get<bool>("hardware.sensors.pressure.enabled");
-
+        // streamed one profile at a time, under the lock the main loop takes while it replaces the list
         AsyncResponseStream* response = request->beginResponseStream("application/json");
-        serializeJson(doc, *response);
+        response->printf(R"({"maxProfiles":%u,"maxPhases":%u,"maxTargets":%u,"profilingAvailable":%s,"pressureSensor":%s,)", kMaxPressureProfiles, kMaxProfilePhases, kMaxPhaseTargets,
+                         config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") ? "true" : "false", config.get<bool>("hardware.sensors.pressure.enabled") ? "true" : "false");
+
+        std::lock_guard<std::mutex> lock(pressureProfilesMutex);
+
+        if (!writePressureProfilesBody(*response)) {
+            // the JSON is cut off, the page refuses it and cannot save (and lose) a partial list
+            LOG(ERROR, "Out of memory while sending the pressure profiles");
+        }
+
         request->send(response);
     });
 
@@ -644,7 +646,7 @@ inline void serverSetup() {
             const bool success = result[0] == '\0';
             JsonDocument doc;
             doc["success"] = success;
-            doc["message"] = success ? "Profiles saved" : result;
+            doc["message"] = success ? "Profiles saved, a running brew finishes with the previous profile" : result;
 
             String json;
             serializeJson(doc, json);

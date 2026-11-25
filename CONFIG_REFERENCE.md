@@ -105,7 +105,7 @@ This document describes all configuration parameters available in the `config.js
 ### `brew.profiling.enabled`
 - **Type**: Boolean
 - **Default**: `false`
-- **Description**: Modulates the pump power during the brew to follow the configured pressure targets, or the active brew profile (see below). Requires the pressure sensor (except for profiles using only fixed pump power phases) (`hardware.sensors.pressure.enabled`) and the pump dimmer (`hardware.pump.dimmer.enabled`). If the pressure sensor stops responding during a brew, that brew continues at full pump power
+- **Description**: Modulates the pump power during the brew to follow the active brew profile (see below), or in simple mode the two pressure targets below. Requires the pump dimmer (`hardware.pump.dimmer.enabled`), and the pressure sensor (`hardware.sensors.pressure.enabled`) for simple mode and for profiles with pressure phases or pressure exits. If the pressure sensor stops responding during a brew, that brew continues at full pump power
 
 ### `brew.profiling.pre_infusion_pressure`
 - **Type**: Double (bar)

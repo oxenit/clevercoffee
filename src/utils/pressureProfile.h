@@ -219,10 +219,6 @@ class PressureProfileRunner {
             return phaseIndex_;
         }
 
-        const char* phaseName() const {
-            return running_ ? profile_.phases[phaseIndex_].name : "";
-        }
-
         const PressureProfile& profile() const {
             return profile_;
         }

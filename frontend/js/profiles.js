@@ -127,6 +127,7 @@ const profilesApp = Vue.createApp({
                 this.profiles = data.profiles.map(profile => fromStored(profile, []))
                 this.maxProfiles = data.maxProfiles
                 this.maxPhases = data.maxPhases
+                this.maxTargets = data.maxTargets
                 this.profilingAvailable = data.profilingAvailable
                 this.pressureSensor = data.pressureSensor
             } catch (error) {

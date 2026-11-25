@@ -40,6 +40,7 @@
 #include <new>
 
 constexpr const char* kPressureProfilesPath = "/profiles.json";
+constexpr const char* kPressureProfilesTempPath = "/profiles.json.tmp";
 // compact JSON of 8 profiles x 8 phases x 4 exit targets with maximal names and values is about 25 kB
 constexpr size_t kPressureProfilesMaxJsonSize = 32768;
 
@@ -55,6 +56,9 @@ struct PendingPressureProfiles {
 };
 
 inline std::mutex pendingPressureProfilesMutex;
+
+// held by the main loop while it replaces the live list, and by the web server while it sends it
+inline std::mutex pressureProfilesMutex;
 inline PendingPressureProfiles* pendingPressureProfiles = nullptr;
 
 inline const char* profileTransitionToString(const ProfileTransition type) {
@@ -299,6 +303,11 @@ inline bool parsePressureProfiles(const JsonDocument& doc, PressureProfile* prof
             profile.phaseCount++;
         }
 
+        if (profile.totalDuration() <= 0.0f) {
+            error = String("Profile '") + profile.name + "' has a total duration of 0 s";
+            return false;
+        }
+
         count++;
     }
 
@@ -314,46 +323,74 @@ inline bool parsePressureProfiles(const JsonDocument& doc, PressureProfile* prof
     return true;
 }
 
-inline void serializePressureProfiles(JsonDocument& doc) {
-    doc["selected"] = selectedPressureProfile;
-    const JsonArray list = doc["profiles"].to<JsonArray>();
+inline void serializePressureProfile(const PressureProfile& profile, JsonDocument& doc) {
+    doc["label"] = profile.name;
+    doc["type"] = "pro";
+    const JsonArray phases = doc["phases"].to<JsonArray>();
 
-    for (uint8_t i = 0; i < pressureProfileCount; i++) {
-        const PressureProfile& profile = pressureProfiles[i];
-        const JsonObject profileJson = list.add<JsonObject>();
-        profileJson["label"] = profile.name;
-        profileJson["type"] = "pro";
-        const JsonArray phases = profileJson["phases"].to<JsonArray>();
+    for (uint8_t p = 0; p < profile.phaseCount; p++) {
+        const ProfilePhase& phase = profile.phases[p];
+        const JsonObject phaseJson = phases.add<JsonObject>();
+        phaseJson["name"] = phase.name;
+        phaseJson["duration"] = phase.duration;
 
-        for (uint8_t p = 0; p < profile.phaseCount; p++) {
-            const ProfilePhase& phase = profile.phases[p];
-            const JsonObject phaseJson = phases.add<JsonObject>();
-            phaseJson["name"] = phase.name;
-            phaseJson["duration"] = phase.duration;
+        if (phase.mode == PumpMode::Power) {
+            phaseJson["pump"] = phase.setpoint;
+        }
+        else {
+            const JsonObject pump = phaseJson["pump"].to<JsonObject>();
+            pump["target"] = "pressure";
+            pump["pressure"] = phase.setpoint;
+        }
 
-            if (phase.mode == PumpMode::Power) {
-                phaseJson["pump"] = phase.setpoint;
-            }
-            else {
-                const JsonObject pump = phaseJson["pump"].to<JsonObject>();
-                pump["target"] = "pressure";
-                pump["pressure"] = phase.setpoint;
-            }
+        const JsonObject transition = phaseJson["transition"].to<JsonObject>();
+        transition["type"] = profileTransitionToString(phase.transition);
+        transition["duration"] = phase.transitionDuration;
 
-            const JsonObject transition = phaseJson["transition"].to<JsonObject>();
-            transition["type"] = profileTransitionToString(phase.transition);
-            transition["duration"] = phase.transitionDuration;
+        const JsonArray targets = phaseJson["targets"].to<JsonArray>();
 
-            const JsonArray targets = phaseJson["targets"].to<JsonArray>();
-
-            for (uint8_t t = 0; t < phase.targetCount; t++) {
-                const JsonObject target = targets.add<JsonObject>();
-                target["type"] = phase.targets[t].type == PhaseTargetType::Weight ? "volumetric" : "pressure";
-                target["operator"] = phase.targets[t].lessOrEqual ? "lte" : "gte";
-                target["value"] = phase.targets[t].value;
-            }
+        for (uint8_t t = 0; t < phase.targetCount; t++) {
+            const JsonObject target = targets.add<JsonObject>();
+            target["type"] = phase.targets[t].type == PhaseTargetType::Weight ? "volumetric" : "pressure";
+            target["operator"] = phase.targets[t].lessOrEqual ? "lte" : "gte";
+            target["value"] = phase.targets[t].value;
         }
     }
+}
+
+template <typename Writer>
+bool writeProfilesLiteral(Writer& out, const char* text) {
+    const size_t length = strlen(text);
+    return out.write(reinterpret_cast<const uint8_t*>(text), length) == length;
+}
+
+/**
+ * @brief Stream the members "selected" and "profiles" plus the closing brace of the profiles document, one profile
+ *        at a time so only a single profile is held as a JsonDocument (the full list would be ~25 kB of JSON).
+ *        The caller writes the opening brace and any members before.
+ *
+ * @param out anything with write(const uint8_t*, size_t): a File, an AsyncResponseStream, ...
+ * @return false if a profile could not be serialized (out of memory) or a write came up short (filesystem full),
+ *         the output is incomplete then
+ */
+template <typename Writer>
+bool writePressureProfilesBody(Writer& out) {
+    char selected[32];
+    snprintf(selected, sizeof(selected), "\"selected\":%d,\"profiles\":[", selectedPressureProfile);
+    if (!writeProfilesLiteral(out, selected)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < pressureProfileCount; i++) {
+        JsonDocument doc;
+        serializePressureProfile(pressureProfiles[i], doc);
+
+        if (doc.overflowed() || (i > 0 && !writeProfilesLiteral(out, ",")) || serializeJson(doc, out) != measureJson(doc)) {
+            return false;
+        }
+    }
+
+    return writeProfilesLiteral(out, "]}");
 }
 
 inline ProfilePhase& addDefaultPhase(PressureProfile& profile, const char* name, const float pressure, const float duration, const ProfileTransition transition, const float transitionDuration) {
@@ -398,22 +435,24 @@ inline void createDefaultPressureProfiles() {
     selectedPressureProfile = -1;
 }
 
+/**
+ * @brief Persist the profiles. Written to a temporary file that is then renamed over the old one, so a power cut or a
+ *        full filesystem during the write never leaves a truncated file (which would be replaced by the defaults).
+ */
 inline bool savePressureProfiles() {
-    JsonDocument doc;
-    serializePressureProfiles(doc);
-
-    File file = LittleFS.open(kPressureProfilesPath, "w");
+    File file = LittleFS.open(kPressureProfilesTempPath, "w");
 
     if (!file) {
         LOG(ERROR, "Failed to open pressure profiles file for writing");
         return false;
     }
 
-    const size_t written = serializeJson(doc, file);
+    const bool complete = writeProfilesLiteral(file, "{") && writePressureProfilesBody(file);
     file.close();
 
-    if (written == 0) {
-        LOG(ERROR, "Failed to write pressure profiles file");
+    if (!complete || !LittleFS.rename(kPressureProfilesTempPath, kPressureProfilesPath)) {
+        LOG(ERROR, "Failed to write pressure profiles file, keeping the previous one");
+        LittleFS.remove(kPressureProfilesTempPath);
         return false;
     }
 
@@ -424,6 +463,11 @@ inline bool savePressureProfiles() {
  * @brief Load the profiles at boot, (re)creating the defaults when the file is missing or invalid
  */
 inline void loadPressureProfiles() {
+    // power cut between writing the new file and renaming it: the temporary file is complete, use it
+    if (!LittleFS.exists(kPressureProfilesPath) && LittleFS.exists(kPressureProfilesTempPath)) {
+        LittleFS.rename(kPressureProfilesTempPath, kPressureProfilesPath);
+    }
+
     if (LittleFS.exists(kPressureProfilesPath)) {
         File file = LittleFS.open(kPressureProfilesPath, "r");
         JsonDocument doc;
@@ -513,12 +557,17 @@ inline void processPendingPressureProfiles() {
         return;
     }
 
-    for (uint8_t i = 0; i < update->count; i++) {
-        pressureProfiles[i] = update->profiles[i];
+    {
+        std::lock_guard<std::mutex> lock(pressureProfilesMutex);
+
+        for (uint8_t i = 0; i < update->count; i++) {
+            pressureProfiles[i] = update->profiles[i];
+        }
+
+        pressureProfileCount = update->count;
+        selectedPressureProfile = update->selected;
     }
 
-    pressureProfileCount = update->count;
-    selectedPressureProfile = update->selected;
     delete update;
 
     savePressureProfiles();

@@ -391,8 +391,10 @@ inline bool brew() {
                 if (brewUsesProfile && pressureProfileRunner.finished()) {
                     LOG(INFO, "Brew reached end of profile");
                     currBrewState = kBrewFinished;
+                    break;
                 }
-                else if (brewUsesProfile ? !pumpProfilingFaulted : pressureProfilingEnabled()) {
+
+                if (brewUsesProfile ? !pumpProfilingFaulted : pressureProfilingEnabled()) {
                     if (!pumpPsmActive) {
                         startPumpProfiling(setpoint.mode == PumpMode::Pressure ? setpoint.value : 0.0f);
                     }
@@ -416,10 +418,7 @@ inline bool brew() {
                     debugPumpState("BrewRunning", "on");
                 }
 
-                if (currBrewState == kBrewFinished) {
-                    // profile finished above
-                }
-                else if (currBrewTime > totalTargetBrewTime && brewByTimeEnabled && !brewUsesProfile) {
+                if (currBrewTime > totalTargetBrewTime && brewByTimeEnabled && !brewUsesProfile) {
                     LOG(INFO, "Brew reached time target");
                     currBrewState = kBrewFinished;
                 }

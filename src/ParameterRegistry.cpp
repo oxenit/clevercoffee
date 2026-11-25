@@ -325,16 +325,20 @@ void ParameterRegistry::initialize(Config& config) {
             "Pause to let the puck bloom after the initial pre-infusion while turning off the pump and leaving the 3-way valve open"
         );
 
-        if (config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled")) {
+        // profiles made of fixed pump power phases work without a pressure sensor, the pressure targets below do not
+        if (config.get<bool>("hardware.pump.dimmer.enabled")) {
             addBoolConfigParam(
                 "brew.profiling.enabled",
                 "Pressure Profiling",
                 sBrewSection,
                 341,
                 nullptr,
-                "Modulates the pump power during the brew to follow the configured pressure targets instead of running the pump at full power"
+                "Modulates the pump power during the brew instead of running the pump at full power: follows the active profile (Profiles page), "
+                "or in simple mode the pre-infusion and brew pressure targets below, which need the pressure sensor"
             );
+        }
 
+        if (config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled")) {
             addNumericConfigParam<double>(
                 "brew.profiling.pre_infusion_pressure",
                 "Pre-infusion Pressure (bar)",

@@ -100,6 +100,25 @@ This document describes all configuration parameters available in the `config.js
 - **Range**: 0.0-60.0
 - **Description**: Pause duration after pre-infusion
 
+## Pressure Profiling
+
+### `brew.profiling.enabled`
+- **Type**: Boolean
+- **Default**: `false`
+- **Description**: Modulates the pump power during the brew to follow the configured pressure targets. Requires the pressure sensor (`hardware.sensors.pressure.enabled`) and the pump dimmer (`hardware.pump.dimmer.enabled`). If the pressure sensor stops responding during a brew, that brew continues at full pump power
+
+### `brew.profiling.pre_infusion_pressure`
+- **Type**: Double (bar)
+- **Default**: `3.0`
+- **Range**: 0.0-12.0
+- **Description**: Pressure target during the pre-infusion phase
+
+### `brew.profiling.pressure`
+- **Type**: Double (bar)
+- **Default**: `9.0`
+- **Range**: 0.0-12.0
+- **Description**: Pressure target during the main extraction phase
+
 ---
 
 ## Display Settings
@@ -240,6 +259,13 @@ For each LED type (status, brew, steam):
     - `1`: High trigger (active high)
 - **Description**: Pump relay trigger type
 
+## Pump Dimmer
+
+### `hardware.pump.dimmer.enabled`
+- **Type**: Boolean
+- **Default**: `false`
+- **Description**: The pump is driven by an AC dimmer module (e.g. RobotDyn type) instead of a relay: dimmer gate/PWM input on the pump pin (GPIO 27), dimmer zero crossing output on the ZC pin (GPIO 18). Power the dimmer logic side with 3.3 V, since its zero crossing output is pulled up to its supply and the ESP32 inputs are not 5 V tolerant. The pump power is then modulated by pulse skip modulation, enabling pressure profiling. Regular on/off operation (backflush, manual flush, hot water) keeps working at full power
+
 ## Sensors
 
 ## Temperature Sensor
@@ -256,6 +282,14 @@ For each LED type (status, brew, steam):
 - **Type**: Boolean
 - **Default**: `false`
 - **Description**: Enable pressure sensor
+
+### `hardware.sensors.pressure.type`
+- **Type**: Integer (enum)
+- **Default**: `0`
+- **Valid Values**:
+    - `0`: Honeywell ABP2 (I2C)
+    - `1`: Analog 0.5-4.5V transducer via ADS1115 (I2C)
+- **Description**: Pressure sensor type. For type `1`, the transducer and the ADS1115 are powered with 5 VDC and the transducer output (0.5-4.5 V) is connected to AIN0. Since the ADS1115 runs at 5 V, its SDA/SCL lines must be connected to the ESP32 through a bidirectional logic level converter (5 V ↔ 3.3 V). The pressure range defaults to 0-12 bar and can be adjusted via `ADS1115_pmax` in `src/hardware/pressureSensor.h`.
 
 ## Scale
 ### `hardware.sensors.scale.enabled`

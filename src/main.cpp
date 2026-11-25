@@ -927,6 +927,10 @@ void setup() {
 
     Wire.begin();
 
+    if (config.get<bool>("hardware.sensors.pressure.enabled")) {
+        initPressureSensor(config.get<int>("hardware.sensors.pressure.type"));
+    }
+
     if (config.get<bool>("hardware.oled.enabled")) {
         switch (config.get<int>("hardware.oled.type")) {
             case 0:
@@ -992,6 +996,10 @@ void setup() {
     const auto pumpTriggerType = static_cast<Relay::TriggerType>(config.get<int>("hardware.relays.pump.trigger_type"));
     pumpRelay = new Relay(*pumpRelayPin, pumpTriggerType);
     pumpRelay->off();
+
+    if (config.get<bool>("hardware.pump.dimmer.enabled")) {
+        pumpControlInit(pumpTriggerType == Relay::HIGH_TRIGGER);
+    }
 
     if (config.get<bool>("hardware.switches.power.enabled")) {
         const auto type = static_cast<Switch::Type>(config.get<int>("hardware.switches.power.type"));
@@ -1117,6 +1125,10 @@ void setup() {
 
             if (config.get<bool>("hardware.sensors.pressure.enabled")) {
                 mqttSensors["pressure"] = [] { return inputPressureFilter; };
+            }
+
+            if (config.get<bool>("hardware.pump.dimmer.enabled")) {
+                mqttSensors["pumpPower"] = [] { return static_cast<float>(pumpPsmDuty); };
             }
 
             snprintf(topic_will, sizeof(topic_will), "%s%s/%s", mqtt_topic_prefix.c_str(), hostname.c_str(), "status");
@@ -1324,7 +1336,8 @@ void loopPid() {
         websiteUpdateRunning = true;
 
         // send temperatures to website endpoint
-        sendTempEvent(temperature, brewSetpoint, pidOutput / 10); // pidOutput is promill, so /10 to get percent value
+        // pidOutput is promill, so /10 to get percent value
+        sendTempEvent(temperature, brewSetpoint, pidOutput / 10, config.get<bool>("hardware.sensors.pressure.enabled") ? inputPressureFilter : NAN);
 
         lastTempEvent = millis();
 
@@ -1362,7 +1375,24 @@ void loopPid() {
             previousMillisPressure = currentMillisPressure;
             inputPressure = measurePressure();
             inputPressureFilter = filterPressureValue(inputPressure);
+
+            if (pumpPsmActive && pressureSensorConsecutiveErrors >= pressureProfilingMaxSensorErrors) {
+                // never regulate on a stale reading: finish this brew at full pump power, like without profiling
+                LOG(WARNING, "Pressure sensor not responding, continuing brew at full pump power");
+                pumpProfilingFaulted = true;
+                stopPumpProfiling();
+                pumpRelay->on();
+            }
+            else {
+                updatePumpPressureControl(inputPressureFilter);
+            }
         }
+    }
+
+    // failsafe: pressure profiling must never outlive the brew (e.g. abort through empty water tank or emergency stop)
+    if (pumpPsmActive && !checkBrewActive()) {
+        stopPumpProfiling();
+        pumpRelay->off();
     }
 
     checkSteamSwitch();

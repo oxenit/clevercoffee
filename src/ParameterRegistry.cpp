@@ -26,6 +26,8 @@ extern double steamSetpoint;
 extern double targetBrewTime;
 extern double preinfusion;
 extern double preinfusionPause;
+extern double preinfusionPressure;
+extern double brewPressure;
 extern int backflushCycles;
 extern double backflushFillTime;
 extern double backflushFlushTime;
@@ -58,6 +60,7 @@ static constexpr const char* const logLevels[] = {"TRACE", "DEBUG", "INFO", "WAR
 static constexpr const char* const oledTypes[] = {"SH1106 (1.3\")", "SSD1306 (0.96\")"};
 static constexpr const char* const oledAddresses[] = {"0x3C", "0x3D"};
 static constexpr const char* const tempSensorTypes[] = {"TSIC306", "Dallas DS18B20"};
+static constexpr const char* const pressureSensorTypes[] = {"Honeywell ABP2 (I2C)", "Analog 0.5-4.5V (ADS1115)"};
 static constexpr const char* const scaleTypes[] = {"HX711 (2 load cell controllers)", "HX711 (1 load cell controller)", "Bluetooth"};
 
 void ParameterRegistry::initialize(Config& config) {
@@ -321,6 +324,43 @@ void ParameterRegistry::initialize(Config& config) {
             PRE_INFUSION_PAUSE_MAX,
             "Pause to let the puck bloom after the initial pre-infusion while turning off the pump and leaving the 3-way valve open"
         );
+
+        if (config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled")) {
+            addBoolConfigParam(
+                "brew.profiling.enabled",
+                "Pressure Profiling",
+                sBrewSection,
+                341,
+                nullptr,
+                "Modulates the pump power during the brew to follow the configured pressure targets instead of running the pump at full power"
+            );
+
+            addNumericConfigParam<double>(
+                "brew.profiling.pre_infusion_pressure",
+                "Pre-infusion Pressure (bar)",
+                kDouble,
+                sBrewSection,
+                342,
+                &preinfusionPressure,
+                PROFILING_PRESSURE_MIN,
+                PROFILING_PRESSURE_MAX,
+                "Pressure target during the pre-infusion phase",
+                [&config] { return config.get<bool>("brew.profiling.enabled"); }
+            );
+
+            addNumericConfigParam<double>(
+                "brew.profiling.pressure",
+                "Brew Pressure (bar)",
+                kDouble,
+                sBrewSection,
+                343,
+                &brewPressure,
+                PROFILING_PRESSURE_MIN,
+                PROFILING_PRESSURE_MAX,
+                "Pressure target during the main extraction phase",
+                [&config] { return config.get<bool>("brew.profiling.enabled"); }
+            );
+        }
 
         // Maintenance Section
         addNumericConfigParam<int>(
@@ -917,6 +957,17 @@ void ParameterRegistry::initialize(Config& config) {
         true
     );
 
+    addBoolConfigParam(
+        "hardware.pump.dimmer.enabled",
+        "Pump Dimmer",
+        sHardwareRelaySection,
+        2104,
+        nullptr,
+        "The pump is driven by an AC dimmer module instead of a relay: dimmer gate input on the pump pin, zero crossing output on the ZC pin. Power the dimmer logic with 3.3 V, not 5 V. Enables variable pump power for pressure profiling",
+        [] { return true; },
+        true
+    );
+
     // Switches
     addBoolConfigParam(
         "hardware.switches.brew.enabled",
@@ -1154,6 +1205,19 @@ void ParameterRegistry::initialize(Config& config) {
         2411,
         nullptr,
         "Enable pressure sensor for monitoring brew pressure",
+        [] { return true; },
+        true
+    );
+
+    addEnumConfigParam(
+        "hardware.sensors.pressure.type",
+        "Pressure Sensor Type",
+        sHardwareSensorSection,
+        2412,
+        nullptr,
+        pressureSensorTypes,
+        2,
+        "Type of pressure sensor connected",
         [] { return true; },
         true
     );

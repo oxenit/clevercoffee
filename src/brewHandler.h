@@ -13,6 +13,7 @@
 #pragma once
 
 #include "brewStates.h"
+#include "hardware/pumpControl.h"
 #include "scaleHandler.h"
 
 // Brew control states
@@ -30,6 +31,8 @@ inline double targetBrewTime = TARGET_BREW_TIME;          // brew time in s
 inline double preinfusion = PRE_INFUSION_TIME;            // preinfusion time in s
 inline double preinfusionPause = PRE_INFUSION_PAUSE_TIME; // preinfusion pause time in s
 inline double totalTargetBrewTime = 0;                    // total target brew time including preinfusion and preinfusion pause
+inline double preinfusionPressure = PRE_INFUSION_PRESSURE; // pressure target during pre-infusion in bar (pressure profiling)
+inline double brewPressure = BREW_PRESSURE;               // pressure target during main extraction in bar (pressure profiling)
 inline double currBrewTime = 0;                           // current running total brewed time
 inline unsigned long startingTime = 0;                    // start time of brew
 inline bool brewPidDisabled = false;                      // is PID disabled for delay after brew has started?
@@ -48,6 +51,13 @@ bool isPowerSwitchOperationAllowed();
  */
 inline bool checkBrewActive() {
     return (currBrewState != kBrewIdle && currBrewState != kBrewFinished); // removed && !(machineState >= kEmergencyStop)
+}
+
+/**
+ * @brief True if the brew should be pressure profiled (dimmer modulates pump power towards pressure targets)
+ */
+inline bool pressureProfilingEnabled() {
+    return !pumpProfilingFaulted && config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled");
 }
 
 /**
@@ -257,6 +267,7 @@ inline bool brew() {
                 startingTime = millis();
                 currBrewTime = 0;   // reset currBrewTime, last brew is still stored
                 currBrewWeight = 0; // reset currBrewWeight for new brew
+                pumpProfilingFaulted = false; // give pressure profiling a new chance after a sensor fault in the last brew
 
                 LOG(INFO, "Brew started");
 
@@ -298,8 +309,19 @@ inline bool brew() {
 
         case kPreinfusion:
             valveRelay->on();
-            pumpRelay->on();
-            debugPumpState("Preinfusion", "on");
+
+            if (pressureProfilingEnabled()) {
+                if (!pumpPsmActive) {
+                    startPumpProfiling(static_cast<float>(preinfusionPressure));
+                }
+
+                pumpPressureTarget = static_cast<float>(preinfusionPressure);
+                debugPumpState("Preinfusion", "profiling");
+            }
+            else {
+                pumpRelay->on();
+                debugPumpState("Preinfusion", "on");
+            }
 
             if (currBrewTime > preinfusion * 1000) {
                 LOG(INFO, "Preinfusion pause running");
@@ -310,6 +332,7 @@ inline bool brew() {
 
         case kPreinfusionPause:
             valveRelay->on();
+            stopPumpProfiling();
             pumpRelay->off();
             debugPumpState("Pause", "off");
 
@@ -323,8 +346,19 @@ inline bool brew() {
         case kBrewRunning:
             {
                 valveRelay->on();
-                pumpRelay->on();
-                debugPumpState("BrewRunning", "on");
+
+                if (pressureProfilingEnabled()) {
+                    if (!pumpPsmActive) {
+                        startPumpProfiling(static_cast<float>(brewPressure));
+                    }
+
+                    pumpPressureTarget = static_cast<float>(brewPressure);
+                    debugPumpState("BrewRunning", "profiling");
+                }
+                else {
+                    pumpRelay->on();
+                    debugPumpState("BrewRunning", "on");
+                }
 
                 if (currBrewTime > totalTargetBrewTime && brewByTimeEnabled) {
                     LOG(INFO, "Brew reached time target");
@@ -345,6 +379,7 @@ inline bool brew() {
         case kBrewFinished:
             {
                 valveRelay->off();
+                stopPumpProfiling();
                 pumpRelay->off();
                 debugPumpState("BrewFinished", "off");
 

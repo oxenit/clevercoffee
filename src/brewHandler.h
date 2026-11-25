@@ -15,6 +15,8 @@
 #include "brewStates.h"
 #include "hardware/pumpControl.h"
 #include "scaleHandler.h"
+#include "utils/pressureProfile.h"
+#include "utils/pressureProfileStorage.h"
 
 // Brew control states
 inline BrewSwitchState currBrewSwitchState = kBrewSwitchIdle;
@@ -27,15 +29,17 @@ inline uint8_t currReadingBrewSwitch = LOW;
 inline bool brewSwitchWasOff = false;
 
 // Brew values
-inline double targetBrewTime = TARGET_BREW_TIME;          // brew time in s
-inline double preinfusion = PRE_INFUSION_TIME;            // preinfusion time in s
-inline double preinfusionPause = PRE_INFUSION_PAUSE_TIME; // preinfusion pause time in s
-inline double totalTargetBrewTime = 0;                    // total target brew time including preinfusion and preinfusion pause
+inline double targetBrewTime = TARGET_BREW_TIME;           // brew time in s
+inline double preinfusion = PRE_INFUSION_TIME;             // preinfusion time in s
+inline double preinfusionPause = PRE_INFUSION_PAUSE_TIME;  // preinfusion pause time in s
+inline double totalTargetBrewTime = 0;                     // total target brew time including preinfusion and preinfusion pause
 inline double preinfusionPressure = PRE_INFUSION_PRESSURE; // pressure target during pre-infusion in bar (pressure profiling)
-inline double brewPressure = BREW_PRESSURE;               // pressure target during main extraction in bar (pressure profiling)
-inline double currBrewTime = 0;                           // current running total brewed time
-inline unsigned long startingTime = 0;                    // start time of brew
-inline bool brewPidDisabled = false;                      // is PID disabled for delay after brew has started?
+inline double brewPressure = BREW_PRESSURE;                // pressure target during main extraction in bar (pressure profiling)
+inline double currBrewTime = 0;                            // current running total brewed time
+inline unsigned long startingTime = 0;                     // start time of brew
+inline bool brewPidDisabled = false;                       // is PID disabled for delay after brew has started?
+inline bool brewUsesProfile = false;                       // current brew follows a multi-phase pressure profile
+inline PressureProfileRunner pressureProfileRunner;        // steps through the profile of the current brew
 
 // Backflush values
 inline int backflushCycles = BACKFLUSH_CYCLES;
@@ -58,6 +62,25 @@ inline bool checkBrewActive() {
  */
 inline bool pressureProfilingEnabled() {
     return !pumpProfilingFaulted && config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") && config.get<bool>("hardware.sensors.pressure.enabled");
+}
+
+/**
+ * @brief The profile the next brew should follow, nullptr for a brew without profile (simple mode, plain relay)
+ */
+inline const PressureProfile* profileForNextBrew() {
+    const PressureProfile* profile = activePressureProfile();
+
+    if (profile == nullptr || !config.get<bool>("brew.profiling.enabled") || !config.get<bool>("hardware.pump.dimmer.enabled")) {
+        return nullptr;
+    }
+
+    // fixed power phases work without a pressure sensor, pressure phases and pressure exit targets do not
+    if (profile->needsPressureSensor() && !config.get<bool>("hardware.sensors.pressure.enabled")) {
+        LOGF(WARNING, "Profile '%s' needs the pressure sensor, brewing without profile", profile->name);
+        return nullptr;
+    }
+
+    return profile;
 }
 
 /**
@@ -260,18 +283,32 @@ inline bool brew() {
         totalTargetBrewTime = 0;
     }
 
+    // a profiled brew ends with its profile, show the nominal profile length as target time
+    if (brewUsesProfile) {
+        totalTargetBrewTime = pressureProfileRunner.profile().totalDuration() * 1000;
+    }
+
     // state machine for brew
     switch (currBrewState) {
-        case kBrewIdle:             // waiting step for brew switch turning on
+        case kBrewIdle:                       // waiting step for brew switch turning on
             if (currBrewSwitchState == kBrewSwitchShortPressed && brewSwitchWasOff && !backflushOn && machineState != kBackflush) {
                 startingTime = millis();
-                currBrewTime = 0;   // reset currBrewTime, last brew is still stored
-                currBrewWeight = 0; // reset currBrewWeight for new brew
+                currBrewTime = 0;             // reset currBrewTime, last brew is still stored
+                currBrewWeight = 0;           // reset currBrewWeight for new brew
                 pumpProfilingFaulted = false; // give pressure profiling a new chance after a sensor fault in the last brew
 
                 LOG(INFO, "Brew started");
 
-                if (!preinfusionEnabled) {
+                // a selected profile replaces pre-infusion and the time target, its phases define the whole shot
+                const PressureProfile* profile = profileForNextBrew();
+                brewUsesProfile = profile != nullptr;
+
+                if (brewUsesProfile) {
+                    pressureProfileRunner.start(*profile, 0, inputPressureFilter);
+                    LOGF(INFO, "Brew running with pressure profile '%s' (%u phases, %.0f s)", profile->name, profile->phaseCount, profile->totalDuration());
+                    currBrewState = kBrewRunning;
+                }
+                else if (!preinfusionEnabled) {
                     LOG(INFO, "Brew running");
                     currBrewState = kBrewRunning;
                 }
@@ -347,20 +384,41 @@ inline bool brew() {
             {
                 valveRelay->on();
 
-                if (pressureProfilingEnabled()) {
+                // the profile keeps running after a sensor fault (full pump power then), it still decides when the shot ends
+                const PumpSetpoint setpoint =
+                    brewUsesProfile ? pressureProfileRunner.update(static_cast<uint32_t>(currBrewTime), inputPressureFilter, currBrewWeight, pumpPsmDuty) : PumpSetpoint{PumpMode::Pressure, static_cast<float>(brewPressure)};
+
+                if (brewUsesProfile && pressureProfileRunner.finished()) {
+                    LOG(INFO, "Brew reached end of profile");
+                    currBrewState = kBrewFinished;
+                    break;
+                }
+
+                if (brewUsesProfile ? !pumpProfilingFaulted : pressureProfilingEnabled()) {
                     if (!pumpPsmActive) {
-                        startPumpProfiling(static_cast<float>(brewPressure));
+                        startPumpProfiling(setpoint.mode == PumpMode::Pressure ? setpoint.value : 0.0f);
                     }
 
-                    pumpPressureTarget = static_cast<float>(brewPressure);
+                    if (setpoint.mode == PumpMode::Power) {
+                        setPumpPower(setpoint.value);
+                    }
+                    else {
+                        setPumpPressureTarget(setpoint.value);
+                    }
+
                     debugPumpState("BrewRunning", "profiling");
+                }
+                else if (brewUsesProfile && setpoint.value < pumpPressureOffThreshold) {
+                    // pump off phase (bloom / pause) of a profile that lost its pressure sensor
+                    pumpRelay->off();
+                    debugPumpState("BrewRunning", "off");
                 }
                 else {
                     pumpRelay->on();
                     debugPumpState("BrewRunning", "on");
                 }
 
-                if (currBrewTime > totalTargetBrewTime && brewByTimeEnabled) {
+                if (currBrewTime > totalTargetBrewTime && brewByTimeEnabled && !brewUsesProfile) {
                     LOG(INFO, "Brew reached time target");
                     currBrewState = kBrewFinished;
                 }
@@ -382,6 +440,9 @@ inline bool brew() {
                 stopPumpProfiling();
                 pumpRelay->off();
                 debugPumpState("BrewFinished", "off");
+
+                pressureProfileRunner.stop();
+                brewUsesProfile = false;
 
                 brewSwitchWasOff = false;
                 LOG(INFO, "Brew finished");

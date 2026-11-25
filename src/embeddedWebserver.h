@@ -607,6 +607,82 @@ inline void serverSetup() {
             }
         });
 
+    server.on("/profiles", HTTP_GET, [](AsyncWebServerRequest* request) {
+        if (!authenticate(request)) {
+            return request->requestAuthentication();
+        }
+
+        char prefix[128];
+        snprintf(prefix, sizeof(prefix), R"({"maxProfiles":%u,"maxPhases":%u,"maxTargets":%u,"profilingAvailable":%s,"pressureSensor":%s,)", kMaxPressureProfiles, kMaxProfilePhases, kMaxPhaseTargets,
+                 config.get<bool>("brew.profiling.enabled") && config.get<bool>("hardware.pump.dimmer.enabled") ? "true" : "false", config.get<bool>("hardware.sensors.pressure.enabled") ? "true" : "false");
+
+        // chunked, one profile per piece: the full list does not fit in a single response buffer
+        const auto stream = std::make_shared<PressureProfilesJsonStream>(prefix);
+
+        request->send(request->beginChunkedResponse("application/json", [stream](uint8_t* buffer, const size_t maxLength, size_t) { return stream->read(buffer, maxLength); }));
+    });
+
+    server.on(
+        "/profiles", HTTP_POST,
+        [](AsyncWebServerRequest* request) {
+            if (!authenticate(request)) {
+                return request->requestAuthentication();
+            }
+
+            // the body handler below stores the validation result as a strdup'ed C string ("" = success),
+            // the web server releases _tempObject with free() when the request is destroyed
+            const auto* result = static_cast<const char*>(request->_tempObject);
+
+            if (result == nullptr) {
+                request->send(400, "application/json", R"({"success": false, "message": "Empty request"})");
+                return;
+            }
+
+            const bool success = result[0] == '\0';
+            JsonDocument doc;
+            doc["success"] = success;
+            doc["message"] = success ? "Profiles saved, a running brew finishes with the previous profile" : result;
+
+            String json;
+            serializeJson(doc, json);
+            request->send(success ? 200 : 400, "application/json", json);
+        },
+        nullptr,
+        [](AsyncWebServerRequest* request, const uint8_t* data, const size_t len, const size_t index, const size_t total) {
+            // the body arrives before the request handler runs, so authentication has to be checked here as well:
+            // without a result the request handler answers with the authentication request and nothing is queued
+            if (!authenticate(request)) {
+                return;
+            }
+
+            static String body;
+
+            if (index == 0) {
+                body = "";
+
+                if (total > kPressureProfilesMaxJsonSize) {
+                    request->_tempObject = strdup("Profiles document too large");
+                    return;
+                }
+
+                if (!body.reserve(total)) {
+                    request->_tempObject = strdup("Out of memory");
+                    return;
+                }
+            }
+
+            if (request->_tempObject != nullptr) {
+                return; // already rejected
+            }
+
+            body.concat(reinterpret_cast<const char*>(data), len);
+
+            if (index + len == total) {
+                request->_tempObject = strdup(queuePressureProfilesUpdate(body).c_str());
+                body = "";
+            }
+        });
+
     server.on("/restart", HTTP_POST, [](AsyncWebServerRequest* request) {
         if (!authenticate(request)) {
             return request->requestAuthentication();

@@ -105,7 +105,7 @@ This document describes all configuration parameters available in the `config.js
 ### `brew.profiling.enabled`
 - **Type**: Boolean
 - **Default**: `false`
-- **Description**: Modulates the pump power during the brew to follow the configured pressure targets. Requires the pressure sensor (`hardware.sensors.pressure.enabled`) and the pump dimmer (`hardware.pump.dimmer.enabled`). If the pressure sensor stops responding during a brew, that brew continues at full pump power
+- **Description**: Modulates the pump power during the brew to follow the active brew profile (see below), or in simple mode the two pressure targets below. Requires the pump dimmer (`hardware.pump.dimmer.enabled`), and the pressure sensor (`hardware.sensors.pressure.enabled`) for simple mode and for profiles with pressure phases or pressure exits. If the pressure sensor stops responding during a brew, that brew continues at full pump power
 
 ### `brew.profiling.pre_infusion_pressure`
 - **Type**: Double (bar)
@@ -118,6 +118,20 @@ This document describes all configuration parameters available in the `config.js
 - **Default**: `9.0`
 - **Range**: 0.0-12.0
 - **Description**: Pressure target during the main extraction phase
+
+### Brew profiles (`/profiles.json`)
+
+Multi-phase profiles are not part of `config.json`: they are stored in `/profiles.json` on LittleFS and edited on the **Profiles** page of the web interface (`GET`/`POST /profiles`). The file holds up to 8 profiles of up to 8 phases and the index of the active profile (`selected`, `-1` = simple mode using the two pressure targets above). A missing or invalid file is replaced by three example profiles, with simple mode selected.
+
+The profile objects use the [GaggiMate](https://github.com/jniebuhr/gaggimate) field names, restricted to what this firmware supports:
+
+- `label`: profile name
+- `phases[].duration`: maximum phase length in seconds (0-300)
+- `phases[].pump`: either a fixed pump power in % (number, works without pressure sensor) or `{"target": "pressure", "pressure": <bar>}`; 0 bar switches the pump off with the brew valve open
+- `phases[].transition`: `{"type": "instant" | "linear" | "ease-in" | "ease-out" | "ease-in-out", "duration": <s>}`, the ramp starts from the previous phase's setpoint; a duration of 0 ramps over the whole phase
+- `phases[].targets`: optional exit conditions `{"type": "volumetric" | "pressure", "operator": "gte" | "lte", "value": <g | bar>}`; a weight of 0 is ignored
+
+Flow targets, volume based transitions and other exit types are rejected (the web importer converts or drops them with a warning). The active profile is used when `brew.profiling.enabled` and `hardware.pump.dimmer.enabled` are set, and the pressure sensor is enabled if the profile has pressure phases or pressure exits. It replaces pre-infusion and brew by time: the shot ends after the last phase, brew by weight still stops it early.
 
 ---
 

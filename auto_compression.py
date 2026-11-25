@@ -22,6 +22,7 @@ FILES_TO_COMPRESS = [
     "js/uPlot.1.6.28.min.js",
     "js/vue-number-input.min.js",
     "js/temp.js",
+    "js/profiles.js",
     "webfonts/fa-solid-900.woff2",
     "webfonts/fa-regular-400.woff2",
 ]
